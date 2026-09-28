@@ -8,21 +8,32 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { apply, name, inject } from '../lib/index.js';
+import { idx } from '../src/board.js';
 
 /** 挂一份全新的插件实例：棋局状态挂在插件实例上，所以每个用例都要新挂一次。 */
 function mount() {
   const tools = new Map();
   const channels = new Map();
   const effects = [];
+  /** 假的 Agent：只记下被喂了什么，不真的驱动回合。 */
+  const agent = {
+    followups: [],
+    followup(message) { this.followups.push(message); },
+  };
   const ctx = {
     effect(fn, label) { effects.push(label); return fn(); },
     get(serviceName) {
-      if (serviceName !== 'connection') return undefined;
-      return {
-        rpc: {
-          handle(channel, handler) { channels.set(channel, handler); return () => {}; },
-        },
-      };
+      if (serviceName === 'connection') {
+        return {
+          rpc: {
+            handle(channel, handler) { channels.set(channel, handler); return () => {}; },
+          },
+        };
+      }
+      if (serviceName === 'agents') {
+        return { get(id) { return id === 'live-session' ? agent : undefined; } };
+      }
+      return undefined;
     },
     tools: {
       register(definition) { tools.set(definition.name, definition); return () => {}; },
@@ -33,6 +44,7 @@ function mount() {
     tools,
     effects,
     channels,
+    agent,
     /** 走浏览器半边的那条路：同一个 handler，同一个返回形状。 */
     call: (endpoint, payload) => channels.get('/xiangqi')(endpoint, payload, new AbortController().signal),
     run: (toolName, args = {}) => tools.get(toolName).execute(args, {}),
@@ -130,6 +142,80 @@ test('工具与浏览器半边共用同一盘棋', async () => {
   await call('move', { move: '马8进7' });             // 人走
   const board = await run('xiangqi_board');
   assert.match(board.report, /着法：1\.炮二平五 2\.马8进7/);
+});
+
+// ------------------------------------------------------------------ 唤醒会话
+
+test('人在面板上落子会唤醒会话接招', async () => {
+  const { call, agent } = mount();
+  const result = await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.value.notation, '炮二平五');
+  assert.equal(result.value.wake.woken, true);
+  assert.equal(agent.followups.length, 1, '应当正好唤醒一次');
+  const message = agent.followups[0];
+  assert.equal(message.role, 'user');
+  assert.match(message.content[0].text, /炮二平五/);
+  assert.match(message.content[0].text, /轮到你走/);
+  assert.equal(message.source.kind, 'plugin');
+  assert.equal(message.source.plugin, 'xiangqi');
+});
+
+test('会话自己用工具落子绝不唤醒自己（否则会自己跟自己下棋）', async () => {
+  const { run, agent } = mount();
+  await run('xiangqi_move', { move: '炮二平五' });
+  assert.equal(agent.followups.length, 0, '工具路径不许唤醒');
+  await run('xiangqi_move', { move: '马8进7' });
+  assert.equal(agent.followups.length, 0);
+});
+
+test('面板没带会话 id 时不唤醒，并说清楚原因', async () => {
+  const { call, agent } = mount();
+  const result = await call('move', { from: idx(7, 7), to: idx(4, 7) });
+  assert.equal(result.value.wake.woken, false);
+  assert.match(result.value.wake.reason, /会话 id/);
+  assert.equal(agent.followups.length, 0);
+});
+
+test('会话 id 对不上时不唤醒，并说清楚原因', async () => {
+  const { call, agent } = mount();
+  const result = await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: '查无此会话' });
+  assert.equal(result.value.wake.woken, false);
+  assert.match(result.value.wake.reason, /没找到会话/);
+  assert.equal(agent.followups.length, 0);
+});
+
+test('轮到人走的时候，会话经 RPC 走子也不会把自己叫醒', async () => {
+  const { call, agent } = mount();
+  // 开局是红（人）走。红走完轮到黑（会话），这一步按说是人走的，但我们直接指定
+  // sessionId 模拟异常路径：黑走完之后轮到红，就不该唤醒。
+  await call('move', { from: idx(7, 7), to: idx(4, 7) });
+  const second = await call('move', { from: idx(1, 0), to: idx(2, 2), sessionId: 'live-session' });
+  assert.equal(second.ok, true);
+  assert.equal(second.value.turn, 'red');
+  assert.equal(second.value.wake.woken, false);
+  assert.match(second.value.wake.reason, /还没轮到会话走/);
+  assert.equal(agent.followups.length, 0);
+});
+
+test('整条对局循环：人走 → 唤醒 → 会话接招 → 再轮到人', async () => {
+  const { call, run, agent } = mount();
+  // 人心血来潮先手
+  await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
+  assert.equal(agent.followups.length, 1);
+
+  // 会话被唤醒后照做
+  const reply = await run('xiangqi_move', { move: '马8进7' });
+  assert.equal(reply.ok, true);
+  assert.equal(reply.turn, 'red');
+
+  // 人再走一步，应当再唤醒一次
+  await call('move', { from: idx(7, 9), to: idx(6, 7), sessionId: 'live-session' });
+  assert.equal(agent.followups.length, 2);
+
+  const board = await run('xiangqi_board');
+  assert.match(board.report, /着法：1\.炮二平五 2\.马8进7 3\.马二进三/);
 });
 
 test('工具的参数与输出 schema 编译成了 JSON Schema', () => {

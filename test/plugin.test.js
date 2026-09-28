@@ -159,6 +159,16 @@ test('apply 注册 tab 类型、正文，并主动打开右栏', async () => {
   assert.equal(ctx.log.effects.length, 3, '三处注册都要包在 ctx.effect 里才能被撤掉');
 });
 
+test('正文注册带了 inject，把会话 id 注进组件——唤醒会话靠它', async () => {
+  const { exports } = await loadPlugin();
+  const ctx = fakeHostCtx();
+  exports.apply(ctx);
+
+  const options = ctx.log.registered[0].options;
+  assert.equal(typeof options.inject, 'function', '要声明 inject，否则组件拿不到会话 id');
+  assert.deepEqual(options.inject('session-abc'), { sessionId: 'session-abc' });
+});
+
 test('右栏打不开时不抛错，只警告（没有活跃会话就是这种情况）', async () => {
   const { exports } = await loadPlugin();
   const ctx = fakeHostCtx();
