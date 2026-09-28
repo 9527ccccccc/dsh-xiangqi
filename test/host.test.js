@@ -79,6 +79,40 @@ test('RPC 通道注册在 /xiangqi 上', () => {
   assert.deepEqual([...channels.keys()], ['/xiangqi']);
 });
 
+test('connection 迟到时用 ctx.inject 补挂通道，而不是永远错过', async () => {
+  const tools = new Map();
+  const channels = new Map();
+  const pending = [];
+  const ctx = {
+    effect(fn) { return fn(); },
+    // 关键：挂载的这一刻 connection 还不存在
+    get(serviceName) { return serviceName === 'agents' ? { get: () => undefined } : undefined; },
+    inject(services, callback) { pending.push({ services, callback }); },
+    tools: { register(definition) { tools.set(definition.name, definition); return () => {}; } },
+  };
+
+  apply(ctx);
+
+  assert.equal(channels.size, 0, '此刻还没有 connection，通道挂不上');
+  assert.equal(pending.length, 1, '应当用 ctx.inject 等 connection');
+  assert.deepEqual(pending[0].services, ['connection']);
+
+  // 连接服务稍后出现
+  const scoped = {
+    effect(fn) { return fn(); },
+    connection: {
+      rpc: { handle(channel, handler) { channels.set(channel, handler); return () => {}; } },
+    },
+  };
+  pending[0].callback(scoped);
+
+  assert.deepEqual([...channels.keys()], ['/xiangqi'], 'connection 一就绪通道就得挂上');
+  const result = await channels.get('/xiangqi')('view', {}, new AbortController().signal);
+  assert.equal(result.ok, true);
+  assert.equal(result.value.turn, 'red');
+  assert.equal(tools.size, 4, '等 connection 的期间工具照样注册好了');
+});
+
 test('浏览器半边读局面：view 返回的就是 gameView', async () => {
   const result = await mount().call('view', {});
   assert.equal(result.ok, true);
