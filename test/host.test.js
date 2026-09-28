@@ -12,9 +12,18 @@ import { apply, name, inject } from '../lib/index.js';
 /** 挂一份全新的插件实例：棋局状态挂在插件实例上，所以每个用例都要新挂一次。 */
 function mount() {
   const tools = new Map();
+  const channels = new Map();
   const effects = [];
   const ctx = {
     effect(fn, label) { effects.push(label); return fn(); },
+    get(serviceName) {
+      if (serviceName !== 'connection') return undefined;
+      return {
+        rpc: {
+          handle(channel, handler) { channels.set(channel, handler); return () => {}; },
+        },
+      };
+    },
     tools: {
       register(definition) { tools.set(definition.name, definition); return () => {}; },
     },
@@ -23,6 +32,9 @@ function mount() {
   return {
     tools,
     effects,
+    channels,
+    /** 走浏览器半边的那条路：同一个 handler，同一个返回形状。 */
+    call: (endpoint, payload) => channels.get('/xiangqi')(endpoint, payload, new AbortController().signal),
     run: (toolName, args = {}) => tools.get(toolName).execute(args, {}),
     text: async (toolName, args) => {
       const tool = tools.get(toolName);
@@ -42,8 +54,82 @@ test('四个工具都注册上了，且每个都包在 ctx.effect 里', () => {
   assert.deepEqual([...tools.keys()].sort(), [
     'xiangqi_board', 'xiangqi_hint', 'xiangqi_move', 'xiangqi_undo',
   ]);
-  assert.equal(effects.length, 4);
-  for (const label of effects) assert.match(label, /^dsh-xiangqi: xiangqi_/);
+  // 四个工具 + 一条 RPC 通道
+  assert.equal(effects.length, 5);
+  assert.ok(effects.includes('dsh-xiangqi: rpc channel'));
+  for (const label of effects.filter((l) => l.includes('xiangqi_') || l.includes('tools'))) {
+    assert.match(label, /^dsh-xiangqi: /);
+  }
+});
+
+test('RPC 通道注册在 /xiangqi 上', () => {
+  const { channels } = mount();
+  assert.deepEqual([...channels.keys()], ['/xiangqi']);
+});
+
+test('浏览器半边读局面：view 返回的就是 gameView', async () => {
+  const result = await mount().call('view', {});
+  assert.equal(result.ok, true);
+  assert.equal(result.value.turn, 'red');
+  assert.equal(result.value.legalCount, 44);
+  assert.equal(result.value.mode, 'game');
+  assert.match(result.value.fen, /^rnbakabnr\//);
+  assert.deepEqual(result.value.history, []);
+});
+
+test('浏览器半边落子：move 返回新局面与这一步的记谱', async () => {
+  const { call } = mount();
+  const result = await call('move', { move: '炮二平五' });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.notation, '炮二平五');
+  assert.equal(result.value.turn, 'black');
+  assert.deepEqual(result.value.history, ['炮二平五']);
+
+  const after = await call('view', {});
+  assert.equal(after.value.turn, 'black', '轮询要能看到变化');
+});
+
+test('浏览器半边走非法着法：返回 ok:false 并带上原因', async () => {
+  const result = await mount().call('move', { move: '帅五进三' });
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /合法着法有/);
+});
+
+test('未知接口返回 ok:false，而不是把异常穿出去', async () => {
+  const result = await mount().call('乱写的接口', {});
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /未知的接口/);
+});
+
+test('浏览器半边的 moves：给一个交叉点，列出落点', async () => {
+  const result = await mount().call('moves', { from: '7,7' });
+  assert.equal(result.ok, true);
+  const notations = result.value.targets.map((t) => t.notation);
+  assert.ok(notations.includes('炮二平五'));
+  assert.ok(result.value.targets.every((t) => Number.isInteger(t.to)));
+});
+
+test('浏览器半边的 hint 与 undo', async () => {
+  const { call } = mount();
+  await call('hint', { move: '炮二平五' });
+  const hinted = await call('view', {});
+  assert.equal(hinted.value.hint.notation, '炮二平五');
+
+  await call('move', { move: '炮二平五' });
+  const undone = await call('undo', {});
+  assert.equal(undone.ok, true);
+  assert.equal(undone.value.turn, 'red');
+  assert.deepEqual(undone.value.history, []);
+});
+
+test('工具与浏览器半边共用同一盘棋', async () => {
+  const { run, call } = mount();
+  await run('xiangqi_move', { move: '炮二平五' });   // 会话走
+  const seen = await call('view', {});
+  assert.equal(seen.value.turn, 'black', '会话走的子，面板要能看见');
+  await call('move', { move: '马8进7' });             // 人走
+  const board = await run('xiangqi_board');
+  assert.match(board.report, /着法：1\.炮二平五 2\.马8进7/);
 });
 
 test('工具的参数与输出 schema 编译成了 JSON Schema', () => {
