@@ -16,12 +16,21 @@ New-Item -ItemType Junction `
   -Path  "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-xiangqi" `
   -Target "<repo>"
 
-# 2) 在 profile 的 patch 层里挂上这一行
+# 2) 让仓库里的服务端半边能 bare import 宿主包
+#    Node 解析联接时会取真实路径，然后从 <repo> 往上找 node_modules，
+#    找不到 @deepseek-ai/*；所以要在仓库里放一条指回 profile 依赖的联接。
+New-Item -ItemType Junction `
+  -Path  "<repo>\node_modules" `
+  -Target "$env:USERPROFILE\.dsh\profiles\node_modules"
+
+# 3) 在 profile 的 patch 层里挂上这一行
 #    $env:USERPROFILE\.dsh\profiles\web\cordis.patch.yml
 #    - insert:
 #        - id: xiangqi
 #          name: 'dsh-xiangqi'
 ```
+
+第 2 步不做的话，`lib/index.js` 里任何 `import ... from '@deepseek-ai/...'` 都会以 `ERR_MODULE_NOT_FOUND` 失败——而且报错看上去像包没装，很容易查错方向。
 
 profile 的 `package.json` 里记一条 `"dsh-xiangqi": "link:<repo>"`，说明这个依赖是链接进来的。
 

@@ -1,2 +1,5 @@
 # 派生目录：由 CLI 从对局真相重新生成，随时可丢
 state/
+
+# 依赖由 profile 链接进来（见 docs/install.md），不入版本库
+node_modules/
