@@ -55,9 +55,6 @@ function mount(stateDir) {
   // 每个实例一个独立的状态目录，免得用例之间通过存盘文件互相串。
   const dir = stateDir || mkdtempSync(path.join(tmpdir(), 'xq-test-'));
   process.env.DSH_XIANGQI_STATE_DIR = dir;
-  const listeners = new Map();
-  /** 假的推理档位清单：低/高/最高三档，故意不按从轻到重排，验证是按名字挑的。 */
-  const resolved = [];
   const tools = new Map();
   const routes = new Map();
   const effects = [];
@@ -70,32 +67,11 @@ function mount(stateDir) {
   };
   const ctx = {
     effect(fn, label) { effects.push(label); return fn(); },
-    on(event, listener) { listeners.set(event, listener); return () => {}; },
     get(serviceName) {
       if (serviceName === 'agents') {
         // 默认任何 id 都能找到（真实注册表就是这样，找不到才返回 undefined）。
         // 要模拟「查无此会话」的用例自己覆盖 ctx.get。
         return { get() { return agent; } };
-      }
-      if (serviceName === 'llm') {
-        return {
-          resolveModelInfo(provider, model) {
-            resolved.push(`${provider}/${model}`);
-            // 故意把档位按「高、最高、低」的顺序给，检验我们是按名字挑而不是取第一个
-            return Promise.resolve({
-              provider,
-              model,
-              reasoning: {
-                efforts: [
-                  { id: 'high', name: 'High' },
-                  { id: 'max', name: 'Max' },
-                  { id: 'low', name: 'Low' },
-                ],
-                defaultEffort: 'high',
-              },
-            });
-          },
-        };
       }
       return undefined;
     },
@@ -117,8 +93,6 @@ function mount(stateDir) {
     routes,
     agent,
     ctx,
-    listeners,
-    resolved,
     stateDir: dir,
     /** 走浏览器半边的那条路：同一个 handler，同一个返回形状。 */
     call: (endpoint, payload) => hitRoute(routes.get('/xiangqi'), endpoint, payload).then((r) => r.json),
@@ -711,73 +685,6 @@ test('走子的返回里带轮次或结果，模型不必再问一次', async ()
 });
 
 // ------------------------------------------------------------------ 通知而不唤醒
-
-/** 一次 agent/request waterfall 的驱动，返回插件给出的配置。 */
-function driveRequest(listeners, sessionId, config) {
-  return listeners.get('agent/request')(
-    { agent: { session: { id: sessionId } }, signal: undefined },
-    () => Promise.resolve(config),
-  );
-}
-
-test('人走完一步之后的**那一次**模型调用被压到最轻的档位', async () => {
-  // 用户说「慢主要是思考太久了」。提示词劝不住，就动真格：在唤醒触发的那一次
-  // 调用上换掉 reasoningEffort，其余时候不碰。
-  const { call, listeners } = mount();
-  const base = { provider: 'p', model: 'm', temperature: 0.7 };
-
-  assert.deepEqual(await driveRequest(listeners, 'live-session', base), base, '还没人走棋时不该动配置');
-
-  await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
-
-  const altered = await driveRequest(listeners, 'live-session', base);
-  assert.equal(altered.reasoningEffort, 'low', '要挑名字里带 low 的档，而不是清单第一项');
-  assert.equal(altered.temperature, 0.7, '其他字段一个都不能丢');
-  assert.equal(altered.provider, 'p');
-
-  assert.deepEqual(
-    await driveRequest(listeners, 'live-session', base),
-    base,
-    '用完即弃：紧接着的第二次调用不该再被压',
-  );
-  assert.deepEqual(
-    await driveRequest(listeners, '别的会话', base),
-    base,
-    '别的会话一点都不该被影响',
-  );
-});
-
-test('档位清单只问一次，之后走缓存', async () => {
-  const { call, listeners, resolved } = mount();
-  const warm = async () => {
-    await call('move', { move: '炮二平五', sessionId: 's' });
-    await driveRequest(listeners, 's', { provider: 'p', model: 'm' });
-    await call('move', { move: '马8进7', sessionId: 's' });
-    await driveRequest(listeners, 's', { provider: 'p', model: 'm' });
-  };
-  await warm();
-  assert.equal(resolved.length, 1, `resolveModelInfo 应当只问一次，实际问了 ${resolved.length} 次`);
-});
-
-test('拿不到档位清单时原样放行，绝不把这次调用弄挂', async () => {
-  const { call, listeners, ctx } = mount();
-  ctx.get = (name) => (name === 'llm' ? { resolveModelInfo: () => Promise.reject(new Error('没有元数据')) } : undefined);
-
-  await call('move', { move: '炮二平五', sessionId: 's' });
-  const config = { provider: 'p', model: 'm' };
-  assert.deepEqual(await driveRequest(listeners, 's', config), config);
-});
-
-test('模型本来就不支持档位时，原样放行', async () => {
-  const { call, listeners, ctx } = mount();
-  ctx.get = (name) => (name === 'llm'
-    ? { resolveModelInfo: () => Promise.resolve({ provider: 'p', model: 'm', reasoning: { efforts: [] } }) }
-    : undefined);
-
-  await call('move', { move: '炮二平五', sessionId: 's' });
-  const config = { provider: 'p', model: 'm' };
-  assert.deepEqual(await driveRequest(listeners, 's', config), config);
-});
 
 
 test('人悔棋会通知会话，但用 inject 不唤醒（这件事不需要它行动）', async () => {
