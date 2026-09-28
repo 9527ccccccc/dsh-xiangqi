@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>中国象棋 · 自由摆棋</title>
+<style>
+  :root{
+    --bg:#141210;
+    --panel:#1d1a16;
+    --panel-2:#262019;
+    --line:#3a3229;
+    --text:#ece3d4;
+    --muted:#9c8f7b;
+    --red:#c0392b;
+    --black:#26231f;
+    --accent:#c9a227;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  html,body{height:100%;margin:0;}
+  body{
+    background:radial-gradient(1200px 720px at 15% -10%, #2b241b, #141210 62%);
+    color:var(--text);
+    font-family:"PingFang SC","Microsoft YaHei","Hiragino Sans GB",system-ui,-apple-system,sans-serif;
+    overflow:hidden;
+  }
+  .app{display:flex;height:100%;min-height:0;}
+
+  /* ---------- 侧栏 ---------- */
+  .side{
+    width:268px;flex:0 0 268px;height:100%;
+    background:linear-gradient(180deg,#221e19,#191613);
+    border-right:1px solid var(--line);
+    padding:18px 16px 22px;
+    overflow-y:auto;
+  }
+  .side header{margin-bottom:14px;}
+  .side h1{
+    margin:0;font-size:20px;letter-spacing:.16em;font-weight:600;
+    font-family:"KaiTi","STKaiti",serif;
+  }
+  .side .sub{margin:6px 0 0;font-size:12px;color:var(--muted);letter-spacing:.06em;}
+  .group{margin-top:18px;}
+  .group h2{
+    display:flex;align-items:center;gap:7px;
+    margin:0 0 9px;font-size:12px;font-weight:500;letter-spacing:.18em;color:var(--muted);
+  }
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+  .dot.red{background:#d0473a;box-shadow:0 0 8px rgba(208,71,58,.7);}
+  .dot.black{background:#6f665a;box-shadow:0 0 8px rgba(111,102,90,.6);}
+
+  .tray{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;}
+  .tray .piece{position:relative;transition:transform .12s ease,box-shadow .12s ease;}
+  .tray .piece:hover{transform:translateY(-2px);}
+  .tray .piece.active{
+    transform:translateY(-3px) scale(1.06);
+    box-shadow:0 0 0 2px var(--accent),0 6px 14px rgba(0,0,0,.5);
+  }
+  .tray .piece .badge{
+    position:absolute;right:-4px;bottom:-4px;min-width:16px;height:16px;padding:0 3px;
+    border-radius:8px;background:#3a3229;color:#d8cdb9;font-size:10px;line-height:16px;
+    text-align:center;font-family:system-ui,sans-serif;border:1px solid #4a4034;
+  }
+
+  /* ---------- 棋子 ---------- */
+  .piece{
+    display:grid;place-items:center;border-radius:50%;
+    background:radial-gradient(circle at 34% 28%, #fffdf6 0%, #f7e9cd 58%, #dfc59a 100%);
+    box-shadow:0 2px 5px rgba(40,24,6,.42), inset 0 0 0 1px rgba(255,255,255,.55);
+    cursor:grab;user-select:none;touch-action:none;
+    font-family:"KaiTi","STKaiti","Kaiti SC",serif;
+    position:relative;flex:none;
+  }
+  .piece .ring{
+    position:absolute;inset:11%;border-radius:50%;border:1.5px solid currentColor;opacity:.55;
+  }
+  .piece .ch{position:relative;font-weight:700;line-height:1;transform:translateY(-1px);}
+  .piece.red{color:var(--red);}
+  .piece.black{color:#1f1c19;}
+  .piece.red{box-shadow:0 2px 5px rgba(40,24,6,.42), inset 0 0 0 1.5px rgba(192,57,43,.55);}
+  .piece.black{box-shadow:0 2px 5px rgba(40,24,6,.42), inset 0 0 0 1.5px rgba(38,35,31,.55);}
+  .piece.dragging{cursor:grabbing;z-index:60;filter:drop-shadow(0 10px 16px rgba(0,0,0,.55));}
+
+  .board .piece{position:absolute;transform:translate(-50%,-50%);will-change:left,top;}
+
+  /* ---------- 按钮 ---------- */
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+  .btns button{
+    padding:9px 6px;border-radius:9px;cursor:pointer;
+    border:1px solid #463c30;background:linear-gradient(180deg,#2e2820,#241f19);
+    color:#e4d9c6;font-size:12.5px;letter-spacing:.06em;
+    font-family:inherit;transition:.15s;
+  }
+  .btns button:hover{background:linear-gradient(180deg,#3a3227,#2a241d);border-color:#5d5040;color:#fff;}
+  .btns button:active{transform:translateY(1px);}
+  .btns button.wide{grid-column:1 / -1;}
+
+  .hint{margin:16px 0 0;font-size:11.5px;line-height:1.85;color:#8a7d6b;letter-spacing:.03em;}
+  .status{
+    margin-top:14px;padding:8px 10px;border-radius:8px;
+    background:#211d18;border:1px solid #352e25;font-size:11.5px;color:#b7a992;
+    display:flex;justify-content:space-between;letter-spacing:.05em;
+  }
+  .status b{color:var(--accent);font-weight:600;}
+
+  /* ---------- 棋盘 ---------- */
+  .stage{
+    flex:1;min-width:0;min-height:0;display:flex;align-items:center;justify-content:center;
+    padding:14px;position:relative;
+  }
+  .board{
+    position:relative;border-radius:10px;
+    box-shadow:0 22px 50px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.06);
+  }
+  .board canvas{display:block;border-radius:10px;}
+  .piecesLayer{position:absolute;inset:0;pointer-events:none;}
+  .piecesLayer .piece{pointer-events:auto;}
+  .snap{
+    position:absolute;border-radius:50%;border:2px dashed rgba(201,162,39,.95);
+    transform:translate(-50%,-50%);pointer-events:none;display:none;
+    box-shadow:0 0 12px rgba(201,162,39,.5);
+  }
+  body.stamping .board{cursor:crosshair;}
+  .ghost{position:fixed;z-index:999;pointer-events:none;transform:translate(-50%,-50%);opacity:.92;}
+
+  .tip{
+    position:absolute;left:50%;bottom:6px;transform:translateX(-50%);
+    font-size:12px;color:#8a7d6b;letter-spacing:.08em;pointer-events:none;
+  }
+  @media (max-width:820px){
+    .app{flex-direction:column;}
+    .side{width:100%;flex:0 0 auto;max-height:44%;border-right:none;border-bottom:1px solid var(--line);}
+    .tray{grid-template-columns:repeat(7,1fr);}
+    .btns{grid-template-columns:repeat(3,1fr);}
+    .tip{display:none;}
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="side">
+    <header>
+      <h1>中国象棋</h1>
+      <p class="sub">自由摆棋 · 无走子规则</p>
+    </header>
+
+    <section class="group">
+      <h2><span class="dot red"></span>红 方</h2>
+      <div class="tray" id="trayRed"></div>
+    </section>
+
+    <section class="group">
+      <h2><span class="dot black"></span>黑 方</h2>
+      <div class="tray" id="trayBlack"></div>
+    </section>
+
+    <section class="group">
+      <h2>操 作</h2>
+      <div class="btns">
+        <button id="btnInit">标准开局</button>
+        <button id="btnClear">清空棋盘</button>
+        <button id="btnUndo">撤销一步</button>
+        <button id="btnFlip">翻转棋盘</button>
+        <button id="btnSave">保存局面</button>
+        <button id="btnLoad">读取局面</button>
+        <button id="btnExport" class="wide">导出为 PNG 图片</button>
+      </div>
+      <div class="status"><span>棋盘上棋子</span><span><b id="count">0</b> 枚</span></div>
+      <p class="hint">
+        · 从棋子库拖棋子到棋盘交叉点即可落子<br />
+        · 单击棋子库中的棋子 → 在棋盘上连续点选落子<br />
+        · 拖动棋盘上的棋子可换位，拖出棋盘即删除<br />
+        · 右键点击棋盘上的棋子 = 删除<br />
+        · Esc 取消连续落子，Ctrl+Z 撤销
+      </p>
+    </section>
+  </aside>
+
+  <main class="stage" id="stage">
+    <div class="board" id="board">
+      <canvas id="cv"></canvas>
+      <div class="piecesLayer" id="piecesLayer"></div>
+      <div class="snap" id="snap"></div>
+    </div>
+    <div class="tip">纯前端单文件 · 双击打开即可使用</div>
+  </main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ================= 基础数据 ================= */
+  // [显示字, 类型索引, 标准数量]
+  var RED   = [["帅",0,1],["仕",1,2],["相",2,2],["马",3,2],["车",4,2],["炮",5,2],["兵",6,5]];
+  var BLACK = [["将",0,1],["士",1,2],["象",2,2],["马",3,2],["车",4,2],["砲",5,2],["卒",6,5]];
+
+  var state = { pieces: [], flipped: false, stamp: null };
+  var undoStack = [];
+  var uid = 1;
+  var elMap = new Map();
+
+  var board = document.getElementById("board");
+  var canvas = document.getElementById("cv");
+  var ctx = canvas.getContext("2d");
+  var layer = document.getElementById("piecesLayer");
+  var snapEl = document.getElementById("snap");
+  var stage = document.getElementById("stage");
+  var countEl = document.getElementById("count");
+
+  // 版面尺寸（由 layout() 计算）
+  var L = { cell: 60, m: 37, W: 0, H: 0 };
+
+  /* ================= 工具 ================= */
+  function nextId(){ return "p" + (uid++); }
+  function charOf(color, type){
+    var arr = color === "red" ? RED : BLACK;
+    for (var i=0;i<arr.length;i++){ if (arr[i][1] === type) return arr[i][0]; }
+    return "?";
+  }
+  function snapshot(){ return JSON.stringify({ pieces: state.pieces, flipped: state.flipped }); }
+  function pushUndo(){
+    undoStack.push(snapshot());
+    if (undoStack.length > 120) undoStack.shift();
+  }
+  function flipPos(col,row){
+    return state.flipped ? { col: 8-col, row: 9-row } : { col: col, row: row };
+  }
+  function toXY(col,row){
+    var d = flipPos(col,row);
+    return [ L.m + d.col*L.cell, L.m + d.row*L.cell ];
+  }
+  // 屏幕坐标 -> 最近的交叉点（超出容差返回 null）
+  function fromXY(x, y){
+    var dc = Math.round((x - L.m) / L.cell);
+    var dr = Math.round((y - L.m) / L.cell);
+    if (dc < 0 || dc > 8 || dr < 0 || dr > 9) return null;
+    var px = L.m + dc*L.cell, py = L.m + dr*L.cell;
+    if (Math.hypot(x - px, y - py) > L.cell * 0.78) return null;
+    return state.flipped ? { col: 8-dc, row: 9-dr } : { col: dc, row: dr };
+  }
+
+  /* ================= 画棋盘 ================= */
+  function drawBoard(g, cell){
+    var m = cell*0.62;
+    var W = 8*cell + m*2, H = 9*cell + m*2;
+    var X = function(c){ return m + c*cell; };
+    var Y = function(r){ return m + r*cell; };
+
+    // 木质底色
+    var bg = g.createLinearGradient(0,0,W,H);
+    bg.addColorStop(0,   "#f7e6c8");
+    bg.addColorStop(0.5, "#f0d8b2");
+    bg.addColorStop(1,   "#e3c79b");
+    g.fillStyle = bg;
+    g.fillRect(0,0,W,H);
+
+    // 淡淡的木纹
+    g.save();
+    g.globalAlpha = 0.05;
+    g.strokeStyle = "#8a5a2b";
+    g.lineWidth = 1;
+    for (var i=0;i<Math.ceil(H/6);i++){
+      g.beginPath();
+      g.moveTo(0, i*6 + (i%3)*1.5);
+      g.lineTo(W, i*6 + 3 - (i%4));
+      g.stroke();
+    }
+    g.restore();
+
+    g.lineCap = "round";
+    g.strokeStyle = "#7b5228";
+
+    // 外框（略粗）
+    g.lineWidth = Math.max(1.6, cell*0.036);
+    g.strokeRect(X(0), Y(0), 8*cell, 9*cell);
+
+    g.lineWidth = Math.max(1, cell*0.019);
+    var line = function(x1,y1,x2,y2){
+      g.beginPath(); g.moveTo(x1,y1); g.lineTo(x2,y2); g.stroke();
+    };
+
+    // 横线 10 条
+    for (var r=0;r<10;r++) line(X(0), Y(r), X(8), Y(r));
+    // 竖线：两侧通到底，中间被楚河汉界断开
+    for (var c=0;c<9;c++){
+      if (c===0 || c===8){ line(X(c), Y(0), X(c), Y(9)); }
+      else { line(X(c), Y(0), X(c), Y(4)); line(X(c), Y(5), X(c), Y(9)); }
+    }
+    // 九宫斜线
+    line(X(3),Y(0),X(5),Y(2)); line(X(5),Y(0),X(3),Y(2));
+    line(X(3),Y(7),X(5),Y(9)); line(X(5),Y(7),X(3),Y(9));
+
+    // 兵/炮位的「十」字标记
+    var mark = function(cc, rr){
+      var cx = X(cc), cy = Y(rr);
+      var d = cell*0.085, len = cell*0.155;
+      var sides = [];
+      if (cc > 0) sides.push([-1,-1],[-1,1]);
+      if (cc < 8) sides.push([ 1,-1],[ 1,1]);
+      g.lineWidth = Math.max(1, cell*0.02);
+      for (var k=0;k<sides.length;k++){
+        var sx = sides[k][0], sy = sides[k][1];
+        g.beginPath();
+        g.moveTo(cx + sx*d, cy + sy*(d+len));
+        g.lineTo(cx + sx*d, cy + sy*d);
+        g.lineTo(cx + sx*(d+len), cy + sy*d);
+        g.stroke();
+      }
+    };
+    [[1,2],[7,2],[1,7],[7,7],
+     [0,3],[2,3],[4,3],[6,3],[8,3],
+     [0,6],[2,6],[4,6],[6,6],[8,6]].forEach(function(p){ mark(p[0], p[1]); });
+
+    // 楚河汉界
+    g.save();
+    g.fillStyle = "rgba(120,80,38,.78)";
+    g.font = '600 ' + (cell*0.6) + 'px "KaiTi","STKaiti",serif';
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText("楚  河", X(2), Y(4.5));
+    g.fillText("漢  界", X(6), Y(4.5));
+    g.restore();
+  }
+
+  function drawPieceOnCanvas(g, cx, cy, cell, color, ch){
+    var r = cell*0.435;
+    g.save();
+    // 投影
+    g.beginPath();
+    g.arc(cx, cy + r*0.12, r, 0, Math.PI*2);
+    g.fillStyle = "rgba(58,34,8,.30)";
+    g.fill();
+    // 棋子主体
+    var grd = g.createRadialGradient(cx - r*0.35, cy - r*0.4, r*0.1, cx, cy, r*1.06);
+    grd.addColorStop(0,   "#fffdf6");
+    grd.addColorStop(0.6, "#f7e9cd");
+    grd.addColorStop(1,   "#dcc094");
+    g.beginPath(); g.arc(cx, cy, r, 0, Math.PI*2);
+    g.fillStyle = grd; g.fill();
+
+    var tint = color === "red" ? "#c0392b" : "#26231f";
+    g.strokeStyle = tint;
+    g.lineWidth = Math.max(1.2, r*0.11);
+    g.beginPath(); g.arc(cx, cy, r*0.93, 0, Math.PI*2); g.stroke();
+    g.globalAlpha = 0.55;
+    g.lineWidth = Math.max(0.8, r*0.06);
+    g.beginPath(); g.arc(cx, cy, r*0.76, 0, Math.PI*2); g.stroke();
+    g.globalAlpha = 1;
+
+    g.fillStyle = tint;
+    g.font = '700 ' + (r*1.16) + 'px "KaiTi","STKaiti",serif';
+    g.textAlign = "center";
+    g.textBaseline = "middle";
+    g.fillText(ch, cx, cy + r*0.06);
+    g.restore();
+  }
+
+  /* ================= 尺寸 ================= */
+  function layout(){
+    var availW = stage.clientWidth - 28;
+    var availH = stage.clientHeight - 28;
+    var cell = Math.floor(Math.min(availW/9.24, availH/10.24));
+    cell = Math.max(28, Math.min(cell, 74));
+    L.cell = cell;
+    L.m = cell*0.62;
+    L.W = Math.round(8*cell + L.m*2);
+    L.H = Math.round(9*cell + L.m*2);
+
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width  = Math.round(L.W * dpr);
+    canvas.height = Math.round(L.H * dpr);
+    canvas.style.width  = L.W + "px";
+    canvas.style.height = L.H + "px";
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    board.style.width  = L.W + "px";
+    board.style.height = L.H + "px";
+
+    var sr = L.cell*0.9;
+    snapEl.style.width = sr + "px";
+    snapEl.style.height = sr + "px";
+
+    drawBoard(ctx, L.cell);
+    renderPieces();
+  }
+
+  /* ================= 棋子 DOM ================= */
+  function makePieceEl(color, ch, size){
+    var s = size || L.cell*0.86;
+    var el = document.createElement("div");
+    el.className = "piece " + color;
+    el.style.width = s + "px";
+    el.style.height = s + "px";
+    el.style.fontSize = (s*0.56) + "px";
+    el.innerHTML = '<span class="ring"></span><span class="ch"></span>';
+    el.querySelector(".ch").textContent = ch;
+    return el;
+  }
+
+  function renderPieces(){
+    layer.innerHTML = "";
+    elMap.clear();
+    for (var i=0;i<state.pieces.length;i++){
+      (function(p){
+        var el = makePieceEl(p.color, p.ch);
+        var xy = toXY(p.col, p.row);
+        el.style.left = xy[0] + "px";
+        el.style.top  = xy[1] + "px";
+        el.title = (p.color === "red" ? "红 " : "黑 ") + p.ch + "（右键删除）";
+        el.addEventListener("pointerdown", function(ev){
+          if (ev.button !== 0) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          startDrag(ev, p);
+        });
+        el.addEventListener("contextmenu", function(ev){
+          ev.preventDefault();
+          pushUndo();
+          removePiece(p.id);
+          renderPieces();
+        });
+        layer.appendChild(el);
+        elMap.set(p.id, el);
+      })(state.pieces[i]);
+    }
+    countEl.textContent = state.pieces.length;
+  }
+
+  function updateCount(){ countEl.textContent = state.pieces.length; }
+
+  function addPiece(color, type, ch, col, row){
+    // 同一交叉点只保留一枚，自动替换
+    state.pieces = state.pieces.filter(function(q){ return !(q.col === col && q.row === row); });
+    state.pieces.push({ id: nextId(), color: color, type: type, ch: ch, col: col, row: row });
+  }
+  function removePiece(id){
+    state.pieces = state.pieces.filter(function(q){ return q.id !== id; });
+  }
+
+  /* ================= 拖动棋盘上的棋子 ================= */
+  var drag = null;
+
+  function startDrag(ev, p){
+    var el = elMap.get(p.id);
+    if (!el) return;
+    drag = { p: p, el: el, moved: false, sx: ev.clientX, sy: ev.clientY };
+    el.classList.add("dragging");
+    document.addEventListener("pointermove", onDragMove);
+    document.addEventListener("pointerup", onDragUp);
+    document.addEventListener("pointercancel", onDragUp);
+  }
+
+  function onDragMove(ev){
+    if (!drag) return;
+    if (Math.hypot(ev.clientX - drag.sx, ev.clientY - drag.sy) > 3) drag.moved = true;
+    var rect = board.getBoundingClientRect();
+    drag.el.style.left = (ev.clientX - rect.left) + "px";
+    drag.el.style.top  = (ev.clientY - rect.top)  + "px";
+
+    var t = fromXY(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (t){
+      var xy = toXY(t.col, t.row);
+      snapEl.style.display = "block";
+      snapEl.style.left = xy[0] + "px";
+      snapEl.style.top  = xy[1] + "px";
+    } else {
+      snapEl.style.display = "none";
+    }
+  }
+
+  function onDragUp(ev){
+    document.removeEventListener("pointermove", onDragMove);
+    document.removeEventListener("pointerup", onDragUp);
+    document.removeEventListener("pointercancel", onDragUp);
+    if (!drag) return;
+    var d = drag; drag = null;
+    snapEl.style.display = "none";
+    d.el.classList.remove("dragging");
+
+    if (!d.moved){ renderPieces(); return; }   // 只是点了一下
+
+    var rect = board.getBoundingClientRect();
+    var t = fromXY(ev.clientX - rect.left, ev.clientY - rect.top);
+    pushUndo();
+    if (t){
+      var dup = state.pieces.filter(function(q){
+        return q.id !== d.p.id && q.col === t.col && q.row === t.row;
+      });
+      if (dup.length){
+        state.pieces = state.pieces.filter(function(q){ return q.id !== dup[0].id; });
+      }
+      d.p.col = t.col;
+      d.p.row = t.row;
+    } else {
+      removePiece(d.p.id);     // 拖出棋盘 = 删除
+    }
+    renderPieces();
+  }
+
+  /* ================= 棋子库 ================= */
+  var stampEl = null;
+
+  function buildTray(host, color, defs){
+    defs.forEach(function(def){
+      var ch = def[0], type = def[1], num = def[2];
+      var el = makePieceEl(color, ch, 46);
+      el.style.fontSize = "26px";
+      el.dataset.color = color;
+      el.dataset.type = String(type);
+
+      var badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = "×" + num;
+      el.appendChild(badge);
+
+      el.addEventListener("pointerdown", function(ev){
+        if (ev.button !== 0) return;
+        ev.preventDefault();
+        startTrayDrag(ev, color, type, ch, el);
+      });
+
+      host.appendChild(el);
+    });
+  }
+
+  function startTrayDrag(ev, color, type, ch, srcEl){
+    var rect = board.getBoundingClientRect();
+    var size = L.cell*0.86;
+    var ghost = makePieceEl(color, ch, size);
+    ghost.classList.add("ghost");
+    document.body.appendChild(ghost);
+
+    var sx = ev.clientX, sy = ev.clientY, moved = false;
+    var moveGhost = function(x,y){
+      ghost.style.left = x + "px";
+      ghost.style.top  = y + "px";
+    };
+    moveGhost(sx, sy);
+
+    var onMove = function(e2){
+      if (Math.hypot(e2.clientX - sx, e2.clientY - sy) > 5) moved = true;
+      moveGhost(e2.clientX, e2.clientY);
+      var r = board.getBoundingClientRect();
+      var t = fromXY(e2.clientX - r.left, e2.clientY - r.top);
+      if (t){
+        var xy = toXY(t.col, t.row);
+        snapEl.style.display = "block";
+        snapEl.style.left = xy[0] + "px";
+        snapEl.style.top  = xy[1] + "px";
+      } else {
+        snapEl.style.display = "none";
+      }
+    };
+
+    var onUp = function(e2){
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("pointercancel", onUp);
+      snapEl.style.display = "none";
+      ghost.remove();
+
+      if (!moved){                        // 单击 = 选中/取消连续落子模式
+        toggleStamp(color, type, ch, srcEl);
+        return;
+      }
+      var r = board.getBoundingClientRect();
+      var t = fromXY(e2.clientX - r.left, e2.clientY - r.top);
+      if (t){
+        pushUndo();
+        addPiece(color, type, ch, t.col, t.row);
+        renderPieces();
+      }
+    };
+
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("pointercancel", onUp);
+  }
+
+  function toggleStamp(color, type, ch, el){
+    if (state.stamp && state.stamp.color === color && state.stamp.type === type){
+      state.stamp = null;
+    } else {
+      state.stamp = { color: color, type: type, ch: ch };
+    }
+    document.querySelectorAll(".tray .piece").forEach(function(n){ n.classList.remove("active"); });
+    if (state.stamp && el) el.classList.add("active");
+    stampEl = state.stamp ? el : null;
+    document.body.classList.toggle("stamping", !!state.stamp);
+  }
+
+  /* ================= 棋盘点击（连续落子） ================= */
+  board.addEventListener("click", function(ev){
+    if (!state.stamp) return;
+    if (ev.target.closest && ev.target.closest(".piece")) return;
+    var rect = board.getBoundingClientRect();
+    var t = fromXY(ev.clientX - rect.left, ev.clientY - rect.top);
+    if (!t) return;
+    pushUndo();
+    addPiece(state.stamp.color, state.stamp.type, state.stamp.ch, t.col, t.row);
+    renderPieces();
+  });
+
+  /* ================= 预设 / 操作 ================= */
+  function standardSetup(){
+    // 黑方
+    var bBack = ["车","马","象","士","将","士","象","马","车"];
+    var rBack = ["车","马","相","仕","帅","仕","相","马","车"];
+    for (var c=0;c<9;c++){
+      addPiece("black", typeOf("black", bBack[c]), bBack[c], c, 0);
+      addPiece("red",   typeOf("red",   rBack[c]), rBack[c], c, 9);
+    }
+    addPiece("black", 5, "砲", 1, 2); addPiece("black", 5, "砲", 7, 2);
+    addPiece("red",   5, "炮", 1, 7); addPiece("red",   5, "炮", 7, 7);
+    [0,2,4,6,8].forEach(function(cc){
+      addPiece("black", 6, "卒", cc, 3);
+      addPiece("red",   6, "兵", cc, 6);
+    });
+  }
+  function typeOf(color, ch){
+    var arr = color === "red" ? RED : BLACK;
+    for (var i=0;i<arr.length;i++){ if (arr[i][0] === ch) return arr[i][1]; }
+    return 0;
+  }
+
+  function clearBoard(){
+    pushUndo();
+    state.pieces = [];
+    renderPieces();
+  }
+
+  function undo(){
+    if (!undoStack.length) return;
+    var s = undoStack.pop();
+    try {
+      var o = JSON.parse(s);
+      state.pieces = o.pieces;
+      state.flipped = !!o.flipped;
+      state.pieces.forEach(function(p){ if (!p.id) p.id = nextId(); });
+      renderPieces();
+    } catch(e){}
+  }
+
+  function flipBoard(){
+    state.flipped = !state.flipped;
+    renderPieces();
+  }
+
+  function saveGame(){
+    try {
+      localStorage.setItem("xq-free-board", snapshot());
+      toast("局面已保存到浏览器");
+    } catch(e){ toast("保存失败：浏览器不支持本地存储"); }
+  }
+
+  function loadGame(){
+    var s = localStorage.getItem("xq-free-board");
+    if (!s){ toast("还没有保存过局面"); return; }
+    try {
+      var o = JSON.parse(s);
+      pushUndo();
+      state.pieces = [];
+      state.flipped = !!o.flipped;
+      (o.pieces || []).forEach(function(p){
+        addPiece(p.color, p.type, p.ch || charOf(p.color, p.type), p.col, p.row);
+      });
+      renderPieces();
+      toast("已读取保存的局面");
+    } catch(e){ toast("读取失败"); }
+  }
+
+  function exportPNG(){
+    var scale = 2;
+    var c = document.createElement("canvas");
+    c.width  = Math.round(L.W * scale);
+    c.height = Math.round(L.H * scale);
+    var g = c.getContext("2d");
+    g.scale(scale, scale);
+    g.fillStyle = "#141210";
+    g.fillRect(0,0,L.W,L.H);
+    // 棋盘本体（带圆角裁剪）
+    g.save();
+    var r = 10;
+    g.beginPath();
+    g.moveTo(r,0); g.lineTo(L.W-r,0); g.quadraticCurveTo(L.W,0,L.W,r);
+    g.lineTo(L.W,L.H-r); g.quadraticCurveTo(L.W,L.H,L.W-r,L.H);
+    g.lineTo(r,L.H); g.quadraticCurveTo(0,L.H,0,L.H-r);
+    g.lineTo(0,r); g.quadraticCurveTo(0,0,r,0);
+    g.closePath(); g.clip();
+    drawBoard(g, L.cell);
+    for (var i=0;i<state.pieces.length;i++){
+      var p = state.pieces[i];
+      var xy = toXY(p.col, p.row);
+      drawPieceOnCanvas(g, xy[0], xy[1], L.cell, p.color, p.ch);
+    }
+    g.restore();
+
+    var a = document.createElement("a");
+    a.download = "中国象棋-摆棋.png";
+    a.href = c.toDataURL("image/png");
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    toast("图片已导出");
+  }
+
+  var toastTimer = null;
+  function toast(msg){
+    var el = document.getElementById("__toast");
+    if (!el){
+      el = document.createElement("div");
+      el.id = "__toast";
+      el.style.cssText = "position:fixed;left:50%;top:22px;transform:translateX(-50%);" +
+        "background:rgba(30,26,21,.95);color:#e8dcc6;border:1px solid #4a4034;padding:9px 16px;" +
+        "border-radius:20px;font-size:13px;z-index:2000;letter-spacing:.05em;" +
+        "box-shadow:0 8px 24px rgba(0,0,0,.5);transition:opacity .25s;pointer-events:none;";
+      document.body.appendChild(el);
+    }
+    el.textContent = msg;
+    el.style.opacity = "1";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ el.style.opacity = "0"; }, 1600);
+  }
+
+  /* ================= 事件绑定 ================= */
+  document.getElementById("btnInit").addEventListener("click", function(){
+    pushUndo(); state.pieces = []; standardSetup(); renderPieces();
+  });
+  document.getElementById("btnClear").addEventListener("click", clearBoard);
+  document.getElementById("btnUndo").addEventListener("click", undo);
+  document.getElementById("btnFlip").addEventListener("click", flipBoard);
+  document.getElementById("btnSave").addEventListener("click", saveGame);
+  document.getElementById("btnLoad").addEventListener("click", loadGame);
+  document.getElementById("btnExport").addEventListener("click", exportPNG);
+
+  document.addEventListener("keydown", function(ev){
+    if (ev.key === "Escape"){
+      if (state.stamp) toggleStamp(state.stamp.color, state.stamp.type, state.stamp.ch, stampEl);
+    }
+    if ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "z"){
+      ev.preventDefault(); undo();
+    }
+  });
+
+  // 拖到棋盘外时避免浏览器默认行为干扰
+  board.addEventListener("contextmenu", function(ev){ ev.preventDefault(); });
+
+  var resizeTimer = null;
+  window.addEventListener("resize", function(){
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(layout, 120);
+  });
+
+  /* ================= 启动 ================= */
+  buildTray(document.getElementById("trayRed"), "red", RED);
+  buildTray(document.getElementById("trayBlack"), "black", BLACK);
+  layout();
+  standardSetup();
+  renderPieces();
+})();
+</script>
+</body>
+</html>
