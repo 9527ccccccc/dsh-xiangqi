@@ -398,6 +398,50 @@ test('人将死会话时，会话照样被唤醒，而且被告知结果', async
   }
 });
 
+test('唤醒提示把局面直接带上，并明确要求别长考', async () => {
+  // 这一条是用户提的：原来的提示只说「先看局面再落子」，模型每步都要
+  // 自己读一遍盘、从头想一遍，一盘棋几十步就永远下不完。
+  const { call, agent } = mount();
+  await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
+
+  const text = agent.followups[0].content[0].text;
+  assert.match(text, /别长考|不要长考/, '要说清楚这是在跟人下棋，别把一步棋当成一次设计评审');
+  assert.match(text, /不用再调 xiangqi_board/, '局面已经带上了，省掉一次工具往返');
+  assert.match(text, /轮到：黑方/, '提示里要写明轮次');
+  assert.match(text, /将军：否/);
+  assert.match(text, /———— 当前局面 ————/, '棋盘要直接附在提示里');
+  assert.match(text, /帅/);
+  assert.match(text, /将/);
+  assert.match(text, /着法：1\.炮二平五/, '带上着法便于定位');
+});
+
+test('被将军时，唤醒提示会点出来（必须应将）', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xq-check-'));
+  try {
+    const position = emptyPosition(RED);
+    for (const [col, row, color, type] of [
+      [4, 9, 'red', 'K'], [4, 7, 'red', 'R'],
+      [4, 0, 'black', 'K'], [4, 1, 'black', 'A'],
+    ]) position.cells[idx(col, row)] = { color, type };
+    writeFileSync(
+      path.join(dir, 'games.json'),
+      JSON.stringify({ chk: serializeGame(newGame('game', position)) }),
+    );
+
+    const { call, agent } = mount(dir);
+    const result = await call('move', { from: idx(4, 7), to: idx(4, 1), sessionId: 'chk' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.value.inCheck, true, '这一步之后黑方应当被将军');
+    assert.equal(result.value.wake.woken, true);
+
+    const text = agent.followups[0].content[0].text;
+    assert.match(text, /将军：是（必须应将）/, '被将军这件事要在提示里说清楚');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('人在面板上落子会唤醒会话接招', async () => {
   const { call, agent } = mount();
   const result = await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
