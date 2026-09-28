@@ -9,11 +9,47 @@ import assert from 'node:assert/strict';
 
 import { apply, name, inject } from '../lib/index.js';
 import { idx } from '../src/board.js';
+import { EventEmitter } from 'node:events';
+
+/**
+ * 驱动宿主那条 HTTP 路由一次。
+ *
+ * 宿主用的是 ctx.webServer.register 挂的裸 node:http 路由，所以这里造一对最小
+ * 的 req/res：req 是事件发射器（路由会 req.on('data'/'end')），res 只要
+ * writeHead/end 并把响应收下来。
+ */
+function hitRoute(route, endpoint, payload) {
+  return new Promise((resolve, reject) => {
+    const req = new EventEmitter();
+    req.method = 'POST';
+    req.url = `/xiangqi/${endpoint}`;
+    const res = {
+      statusCode: 0,
+      headers: null,
+      body: '',
+      writeHead(code, headers) { this.statusCode = code; this.headers = headers; return this; },
+      end(body) {
+        this.body = body || '';
+        let parsed = null;
+        try { parsed = JSON.parse(this.body); } catch { /* 非 JSON 响应保持 null */ }
+        resolve({ status: this.statusCode, body: this.body, json: parsed });
+      },
+    };
+    try {
+      route.handler(req, res);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    req.emit('data', Buffer.from(JSON.stringify(payload === undefined ? {} : payload)));
+    req.emit('end');
+  });
+}
 
 /** 挂一份全新的插件实例：棋局状态挂在插件实例上，所以每个用例都要新挂一次。 */
 function mount() {
   const tools = new Map();
-  const channels = new Map();
+  const routes = new Map();
   const effects = [];
   /** 假的 Agent：只记下被喂了什么，不真的驱动回合。 */
   const agent = {
@@ -23,17 +59,17 @@ function mount() {
   const ctx = {
     effect(fn, label) { effects.push(label); return fn(); },
     get(serviceName) {
-      if (serviceName === 'connection') {
-        return {
-          rpc: {
-            handle(channel, handler) { channels.set(channel, handler); return () => {}; },
-          },
-        };
-      }
       if (serviceName === 'agents') {
         return { get(id) { return id === 'live-session' ? agent : undefined; } };
       }
       return undefined;
+    },
+    webServer: {
+      register(route) { routes.set(route.path, route); return () => {}; },
+    },
+    connection: {
+      // 假装的认证栅栏：放行
+      requestRejection() { return undefined; },
     },
     tools: {
       register(definition) { tools.set(definition.name, definition); return () => {}; },
@@ -43,10 +79,11 @@ function mount() {
   return {
     tools,
     effects,
-    channels,
+    routes,
     agent,
+    ctx,
     /** 走浏览器半边的那条路：同一个 handler，同一个返回形状。 */
-    call: (endpoint, payload) => channels.get('/xiangqi')(endpoint, payload, new AbortController().signal),
+    call: (endpoint, payload) => hitRoute(routes.get('/xiangqi'), endpoint, payload).then((r) => r.json),
     run: (toolName, args = {}) => tools.get(toolName).execute(args, {}),
     text: async (toolName, args) => {
       const tool = tools.get(toolName);
@@ -56,9 +93,12 @@ function mount() {
   };
 }
 
-test('插件声明了名字与 tools 依赖', () => {
+test('插件声明了名字，以及 tools / connection / webServer 三个硬依赖', () => {
   assert.equal(name, 'dsh-xiangqi');
-  assert.deepEqual(inject, ['tools']);
+  // 三个都是踩过坑才知道的：
+  //   connection 的 apply 是 async 的，不声明它就会在服务注册之前跑；
+  //   webServer 是挂路由用的，不声明的话连注册路由的资格都没有。
+  assert.deepEqual(inject, ['tools', 'connection', 'webServer']);
 });
 
 test('四个工具都注册上了，且每个都包在 ctx.effect 里', () => {
@@ -66,51 +106,61 @@ test('四个工具都注册上了，且每个都包在 ctx.effect 里', () => {
   assert.deepEqual([...tools.keys()].sort(), [
     'xiangqi_board', 'xiangqi_hint', 'xiangqi_move', 'xiangqi_undo',
   ]);
-  // 四个工具 + 一条 RPC 通道
+  // 四个工具 + 一条 HTTP 路由
   assert.equal(effects.length, 5);
-  assert.ok(effects.includes('dsh-xiangqi: rpc channel'));
+  assert.ok(effects.includes('dsh-xiangqi: http route'));
   for (const label of effects.filter((l) => l.includes('xiangqi_') || l.includes('tools'))) {
     assert.match(label, /^dsh-xiangqi: /);
   }
 });
 
-test('RPC 通道注册在 /xiangqi 上', () => {
-  const { channels } = mount();
-  assert.deepEqual([...channels.keys()], ['/xiangqi']);
+test('HTTP 路由挂在 /xiangqi 上，并且是前缀匹配', () => {
+  const { routes } = mount();
+  assert.deepEqual([...routes.keys()], ['/xiangqi']);
+  assert.equal(routes.get('/xiangqi').kind, 'prefix');
+  assert.equal(typeof routes.get('/xiangqi').handler, 'function');
 });
 
-test('connection 迟到时用 ctx.inject 补挂通道，而不是永远错过', async () => {
+test('没有通过认证栅栏的请求被挡在外面', async () => {
+  const { routes, ctx } = mount();
+  ctx.connection.requestRejection = () => 401;
+  const response = await hitRoute(routes.get('/xiangqi'), 'view', {});
+  assert.equal(response.status, 401);
+  assert.equal(response.body, 'unauthorized');
+});
+
+test('非 POST 的请求被拒', async () => {
+  const { routes } = mount();
+  const route = routes.get('/xiangqi');
+  const response = await new Promise((resolve) => {
+    const req = new EventEmitter();
+    req.method = 'GET';
+    req.url = '/xiangqi/view';
+    const res = {
+      statusCode: 0,
+      body: '',
+      writeHead(code) { this.statusCode = code; return this; },
+      end(body) { this.body = body || ''; resolve({ status: this.statusCode, body: this.body }); },
+    };
+    route.handler(req, res);
+  });
+  assert.equal(response.status, 405);
+});
+
+test('webServer 不可用时不硬挂路由，也不抛错', async () => {
   const tools = new Map();
-  const channels = new Map();
-  const pending = [];
   const ctx = {
     effect(fn) { return fn(); },
-    // 关键：挂载的这一刻 connection 还不存在
-    get(serviceName) { return serviceName === 'agents' ? { get: () => undefined } : undefined; },
-    inject(services, callback) { pending.push({ services, callback }); },
+    get() { return undefined; },
+    webServer: undefined, // Cordis 不该让这种情况发生，但真发生了也不能炸
+    connection: undefined,
     tools: { register(definition) { tools.set(definition.name, definition); return () => {}; } },
   };
 
-  apply(ctx);
-
-  assert.equal(channels.size, 0, '此刻还没有 connection，通道挂不上');
-  assert.equal(pending.length, 1, '应当用 ctx.inject 等 connection');
-  assert.deepEqual(pending[0].services, ['connection']);
-
-  // 连接服务稍后出现
-  const scoped = {
-    effect(fn) { return fn(); },
-    connection: {
-      rpc: { handle(channel, handler) { channels.set(channel, handler); return () => {}; } },
-    },
-  };
-  pending[0].callback(scoped);
-
-  assert.deepEqual([...channels.keys()], ['/xiangqi'], 'connection 一就绪通道就得挂上');
-  const result = await channels.get('/xiangqi')('view', {}, new AbortController().signal);
-  assert.equal(result.ok, true);
-  assert.equal(result.value.turn, 'red');
-  assert.equal(tools.size, 4, '等 connection 的期间工具照样注册好了');
+  assert.doesNotThrow(() => apply(ctx));
+  assert.equal(tools.size, 4, '工具照样要注册好');
+  const result = await tools.get('xiangqi_board').execute({}, {});
+  assert.equal(result.turn, 'red', '棋局能力不依赖 webServer');
 });
 
 test('浏览器半边读局面：view 返回的就是 gameView', async () => {

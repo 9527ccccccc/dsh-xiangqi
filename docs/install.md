@@ -34,6 +34,40 @@ New-Item -ItemType Junction `
 
 profile 的 `package.json` 里记一条 `"dsh-xiangqi": "link:<repo>"`，说明这个依赖是链接进来的。
 
+## 服务端半边为什么自己挂 HTTP 路由
+
+面板要读局面、要落子，就得有一条从浏览器到宿主的通道。试过两条路：
+
+1. **`ctx.connection.rpc.handle(channel, handler)`**（随包文档推荐的那条）——**走不通**。
+   它内部是 `const owner = this.ctx; owner.effect(() => owner.webServer.register(route))`，
+   而那个 `owner` 并不是调用方的上下文：实测它永远报
+   `cannot get property "webServer" without inject`，即使我的 `inject` 里已经声明了 `webServer`。
+2. **`ctx.webServer.register({kind: 'prefix', path, handler})`** —— 走通了。
+   代价是认证要自己做，而这正好有现成的：`ctx.connection.requestRejection(req)`
+   跑的是和内置 `/api` 通道同一套 Host/Origin 栅栏 + 浏览器会话认证。
+
+所以本插件声明了三个硬依赖：
+
+```js
+export const inject = ['tools', 'connection', 'webServer'];
+```
+
+- **`connection` 的 `apply` 是 async 的**（里面 `await BrowserAuth.create(...)` 之后才
+  `new HostConnectionService(...)`）。不声明它，自己的 `apply` 就会在服务注册之前跑，
+  `ctx.connection` 是 undefined。
+- **`webServer` 不声明的话，连注册路由的资格都没有**（Cordis 的 guard 会拦）。
+
+## 装配失败会拖垮整个 GUI —— 所以 apply 里要套 try
+
+踩过一次：漏声明 `webServer` 时，报错不是「这个插件挂了」，而是
+
+```
+dsh: plugin tree failed to load: failed to apply loader entry xiangqi (dsh-xiangqi)
+```
+
+**整个 Web 界面起不来。** 插件里任何在 `apply` 阶段抛出的错都是这个后果。
+所以挂路由这类操作一律套 `try`：挂不上顶多让面板显示「连不上棋局」，不该拖垮宿主。
+
 ## 生效时机：**改了服务端半边必须重启 `dsh web`**
 
 这是踩过的坑，记下来省得再踩：

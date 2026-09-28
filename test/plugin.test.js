@@ -135,7 +135,8 @@ test('client.js 用包名注册进模块加载器，并导出 apply 与 inject',
   const { definition, exports } = await loadPlugin();
   assert.equal(definition.id, 'dsh-xiangqi');
   assert.equal(typeof exports.apply, 'function');
-  assert.deepEqual(exports.inject, ['slots', 'sidebarRightTabs', 'sidebarRight', 'connection']);
+  // 不再需要 connection：面板是同源页面，直接 fetch 宿主的 /xiangqi 路由
+  assert.deepEqual(exports.inject, ['slots', 'sidebarRightTabs', 'sidebarRight']);
 });
 
 test('apply 注册 tab 类型、正文，并主动打开右栏', async () => {
@@ -255,21 +256,33 @@ test('面板组件能渲染，且渲染时会向宿主轮询局面', async () =>
   const tree = Panel();
   assert.ok(tree, '面板组件必须返回节点');
 
-  // 拦下 setInterval，别让轮询真的跑起来
+  // 拦下 setInterval，别让轮询真的跑起来；同时伪造 fetch
   const realSet = globalThis.setInterval;
   const realClear = globalThis.clearInterval;
+  const realFetch = globalThis.fetch;
   const timers = [];
+  const fetched = [];
   globalThis.setInterval = (fn) => { timers.push(fn); return timers.length; };
   globalThis.clearInterval = () => {};
+  globalThis.fetch = (url, options) => {
+    fetched.push({ url, options });
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true, value: view() }),
+    });
+  };
   try {
     for (const effect of effects) effect();
   } finally {
     globalThis.setInterval = realSet;
     globalThis.clearInterval = realClear;
+    globalThis.fetch = realFetch;
   }
 
-  const polled = ctx.log.calls.filter((c) => c.channel === '/xiangqi' && c.endpoint === 'view');
-  assert.equal(polled.length, 1, '挂载时应当立刻拉一次局面');
+  assert.equal(fetched.length, 1, '挂载时应当立刻拉一次局面');
+  assert.equal(fetched[0].url, '/xiangqi/view');
+  assert.equal(fetched[0].options.method, 'POST');
   assert.equal(timers.length, 1, '并且挂上一个定时器继续轮询');
 
   const findCanvas = (node) => {
@@ -289,12 +302,13 @@ test('host 半边是合法模块且能被挂载', async () => {
   const mod = await import(pathToFileURL(path.join(here, '..', 'lib', 'index.js')).href);
   assert.equal(mod.name, 'dsh-xiangqi');
   assert.equal(typeof mod.apply, 'function');
-  assert.deepEqual(mod.inject, ['tools']);
+  assert.deepEqual(mod.inject, ['tools', 'connection', 'webServer']);
 
   const registered = [];
   const ctx = {
     effect(fn) { return fn(); },
     get() { return undefined; },
+    connection: { rpc: { handle() { return () => {}; } } },
     tools: { register(definition) { registered.push(definition.name); return () => {}; } },
   };
   assert.doesNotThrow(() => mod.apply(ctx));
