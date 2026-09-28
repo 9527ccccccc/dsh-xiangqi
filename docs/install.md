@@ -34,6 +34,23 @@ New-Item -ItemType Junction `
 
 profile 的 `package.json` 里记一条 `"dsh-xiangqi": "link:<repo>"`，说明这个依赖是链接进来的。
 
+## 生效时机：**改了服务端半边必须重启 `dsh web`**
+
+这是踩过的坑，记下来省得再踩：
+
+- **浏览器半边是热的**。`dsh-client-hmr` 每 500ms `stat()` 一次每个 `lib/client.js`，改了自动重载，刷新都不用。
+- **服务端半边不是**。`cordis-plugin-hmr` 只监视**配置文件**（`cordis.yml` / patch 层），不监视插件源码。把 patch 里的 `insert` 摘掉再插回来**也不会**重新加载它——模块已经进了 ESM 缓存。
+
+所以改 `lib/index.js`、`lib/game.js` 或 `src/` 之后，**要重启 `dsh web`**。会话是落盘的，重启后能接着聊。
+
+装好之后可以用启动信标确认它到底活没活：
+
+```powershell
+Get-Content <repo>\state\host.json
+```
+
+里面的 `pid` 应当是 `dsh web` 那个进程的。`rpc` 字段说明它有没有拿到 `connection` 服务——如果是 `false`，说明 RPC 通道没挂上，浏览器半边会连不上局面。
+
 ## 验证
 
 ```powershell
