@@ -296,6 +296,18 @@ test('面板组件能渲染，且渲染时会向宿主轮询局面', async () =>
     return null;
   };
   assert.ok(findCanvas(tree), '渲染树里应当有 canvas');
+
+  // 面板上要有悔棋与重开两个按钮
+  const labels = [];
+  const walk = (node) => {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'button' && typeof node.props.children === 'string') labels.push(node.props.children);
+    const children = node.props && node.props.children;
+    for (const child of Array.isArray(children) ? children : [children]) walk(child);
+  };
+  walk(tree);
+  assert.ok(labels.includes('悔棋'), `面板上应当有悔棋按钮，实际有：${labels.join('、')}`);
+  assert.ok(labels.includes('重开'), `面板上应当有重开按钮，实际有：${labels.join('、')}`);
 });
 
 test('host 半边是合法模块且能被挂载', async () => {

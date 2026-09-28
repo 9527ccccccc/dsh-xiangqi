@@ -7,12 +7,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { apply, name, inject } from '../lib/index.js';
-import { idx } from '../src/board.js';
+import { RED, idx, emptyPosition } from '../src/board.js';
+import { newGame, serializeGame } from '../lib/game.js';
 
 /**
  * 驱动宿主那条 HTTP 路由一次。
@@ -66,7 +67,9 @@ function mount(stateDir) {
     effect(fn, label) { effects.push(label); return fn(); },
     get(serviceName) {
       if (serviceName === 'agents') {
-        return { get(id) { return id === 'live-session' ? agent : undefined; } };
+        // 默认任何 id 都能找到（真实注册表就是这样，找不到才返回 undefined）。
+        // 要模拟「查无此会话」的用例自己覆盖 ctx.get。
+        return { get() { return agent; } };
       }
       return undefined;
     },
@@ -285,6 +288,43 @@ test('悔棋也只退自己会话的那一盘', async () => {
   assert.deepEqual(b.value.history, ['马八进七'], '乙没被牵连');
 });
 
+test('重开一局：该会话回到全新开局，别的会话不受影响', async () => {
+  const { call } = mount();
+  await call('move', { move: '炮二平五', sessionId: '甲' });
+  await call('move', { move: '马8进7', sessionId: '甲' });
+  await call('move', { move: '马八进七', sessionId: '乙' });
+
+  const fresh = await call('reset', { sessionId: '甲' });
+  assert.equal(fresh.ok, true);
+  assert.equal(fresh.value.reset, true);
+  assert.deepEqual(fresh.value.history, []);
+  assert.equal(fresh.value.turn, 'red');
+  assert.equal(fresh.value.legalCount, 44, '应当回到标准开局的 44 个合法着法');
+  assert.match(fresh.value.fen, /^rnbakabnr\//);
+  assert.equal(fresh.value.resultText, '');
+
+  const still = await call('view', { sessionId: '甲' });
+  assert.deepEqual(still.value.history, [], '轮询看到的也是新开的一局');
+
+  const b = await call('view', { sessionId: '乙' });
+  assert.deepEqual(b.value.history, ['马八进七'], '乙那盘不该被动');
+});
+
+test('重开的局面也会落盘，重启后还是新开那一局', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xq-reset-'));
+  try {
+    const before = mount(dir);
+    await before.call('move', { move: '炮二平五', sessionId: '甲' });
+    await before.call('reset', { sessionId: '甲' });
+
+    const after = mount(dir);
+    const restored = await after.call('view', { sessionId: '甲' });
+    assert.deepEqual(restored.value.history, [], '重开之后即使重启也还是新开的一局');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('没有会话 id 时落到公共兜底盘（子代理或直接调工具的情况）', async () => {
   const { call, run } = mount();
   await run('xiangqi_move', { move: '炮二平五' });       // 无 exec.agent
@@ -323,6 +363,41 @@ test('重启之后棋局还在：新挂载的实例从同一份存盘里读回�
 
 // ------------------------------------------------------------------ 唤醒会话
 
+test('人将死会话时，会话照样被唤醒，而且被告知结果', async () => {
+  // 这一条是补出来的：原来终局时我故意不唤醒，理由是「没子可走了」。
+  // 结果是人将死我之后我根本不知道，人还得跟一个不承认输的对手掰扯。
+  const dir = mkdtempSync(path.join(tmpdir(), 'xq-mate-'));
+  try {
+    // 预置一个红方一步将死的局面：红车 (0,5) 走到 (0,0) 即成绝杀
+    const position = emptyPosition(RED);
+    for (const [col, row, color, type] of [
+      [4, 9, 'red', 'K'], [4, 5, 'red', 'R'], [0, 5, 'red', 'R'],
+      [4, 0, 'black', 'K'], [4, 1, 'black', 'A'],
+    ]) position.cells[idx(col, row)] = { color, type };
+    writeFileSync(
+      path.join(dir, 'games.json'),
+      JSON.stringify({ mate: serializeGame(newGame('game', position)) }),
+    );
+
+    const { call, agent } = mount(dir);
+    const result = await call('move', { from: idx(0, 5), to: idx(0, 0), sessionId: 'mate' });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.value.resultText, '红方胜（将死）');
+    assert.equal(result.value.wake.woken, true, '终局也必须唤醒会话');
+    assert.equal(result.value.wake.finished, true);
+    assert.equal(agent.followups.length, 1);
+
+    const text = agent.followups[0].content[0].text;
+    assert.match(text, /这盘到此结束/);
+    assert.match(text, /红方胜（将死）/);
+    assert.match(text, /不要质疑这个结果/, '要明确告诉会话这是规则判的，不许含糊');
+    assert.match(agent.followups[0].source.summary, /红方胜（将死）/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('人在面板上落子会唤醒会话接招', async () => {
   const { call, agent } = mount();
   const result = await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
@@ -356,7 +431,9 @@ test('面板没带会话 id 时不唤醒，并说清楚原因', async () => {
 });
 
 test('会话 id 对不上时不唤醒，并说清楚原因', async () => {
-  const { call, agent } = mount();
+  const { call, agent, ctx } = mount();
+  // 让注册表认不出这个会话
+  ctx.get = (serviceName) => (serviceName === 'agents' ? { get: () => undefined } : undefined);
   const result = await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: '查无此会话' });
   assert.equal(result.value.wake.woken, false);
   assert.match(result.value.wake.reason, /没找到会话/);
