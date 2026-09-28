@@ -55,21 +55,47 @@ function mount(stateDir) {
   // 每个实例一个独立的状态目录，免得用例之间通过存盘文件互相串。
   const dir = stateDir || mkdtempSync(path.join(tmpdir(), 'xq-test-'));
   process.env.DSH_XIANGQI_STATE_DIR = dir;
+  const listeners = new Map();
+  /** 假的推理档位清单：低/高/最高三档，故意不按从轻到重排，验证是按名字挑的。 */
+  const resolved = [];
   const tools = new Map();
   const routes = new Map();
   const effects = [];
-  /** 假的 Agent：只记下被喂了什么，不真的驱动回合。 */
+  /** 假的 Agent：记下被喂了什么，不真的驱动回合。 */
   const agent = {
     followups: [],
+    injected: [],
     followup(message) { this.followups.push(message); },
+    inject(message) { this.injected.push(message); },
   };
   const ctx = {
     effect(fn, label) { effects.push(label); return fn(); },
+    on(event, listener) { listeners.set(event, listener); return () => {}; },
     get(serviceName) {
       if (serviceName === 'agents') {
         // 默认任何 id 都能找到（真实注册表就是这样，找不到才返回 undefined）。
         // 要模拟「查无此会话」的用例自己覆盖 ctx.get。
         return { get() { return agent; } };
+      }
+      if (serviceName === 'llm') {
+        return {
+          resolveModelInfo(provider, model) {
+            resolved.push(`${provider}/${model}`);
+            // 故意把档位按「高、最高、低」的顺序给，检验我们是按名字挑而不是取第一个
+            return Promise.resolve({
+              provider,
+              model,
+              reasoning: {
+                efforts: [
+                  { id: 'high', name: 'High' },
+                  { id: 'max', name: 'Max' },
+                  { id: 'low', name: 'Low' },
+                ],
+                defaultEffort: 'high',
+              },
+            });
+          },
+        };
       }
       return undefined;
     },
@@ -91,6 +117,8 @@ function mount(stateDir) {
     routes,
     agent,
     ctx,
+    listeners,
+    resolved,
     stateDir: dir,
     /** 走浏览器半边的那条路：同一个 handler，同一个返回形状。 */
     call: (endpoint, payload) => hitRoute(routes.get('/xiangqi'), endpoint, payload).then((r) => r.json),
@@ -563,7 +591,7 @@ test('走一步：ok、记谱、轮次都对，棋盘也跟着变', async () => 
   assert.equal(value.ok, true);
   assert.equal(value.notation, '炮二平五');
   assert.equal(value.turn, 'black');
-  assert.match(value.report, /轮到：黑方/);
+  assert.match(value.report, /已走：炮二平五。轮到黑方走/);
   assert.match(await text('xiangqi_move', { move: '马8进7' }), /已走：马8进7/);
 });
 
@@ -574,12 +602,14 @@ test('走坐标同样收', async () => {
 });
 
 test('非法着法不让工具失败，而是 ok:false 并说明能走到哪', async () => {
-  const value = await mount().run('xiangqi_move', { move: '帅五进三' });
+  const { run, text } = mount();
+  const value = await run('xiangqi_move', { move: '帅五进三' });
   assert.equal(value.ok, false);
   assert.equal(value.notation, '');
-  assert.match(value.report, /这一步走不了/);
-  assert.match(value.report, /合法着法有/);
+  assert.match(value.report, /合法着法有/, '原因里要列出合法着法，模型照着改就行');
   assert.equal(value.turn, 'red', '局面不该被动过');
+  // 模型看到的那句话要自带「走不了」的定性，不然它得自己猜
+  assert.match(await text('xiangqi_move', { move: '帅五进三' }), /^这一步走不了：/);
 });
 
 test('悔棋：走一步后能悔回来', async () => {
@@ -638,4 +668,157 @@ test('整局对下：红炮平中、黑马跳出、红炮吃卒，读得到吃�
   const board = await run('xiangqi_board');
   assert.match(board.report, /着法：1\.炮二平五 2\.马8进7 3\.炮五进四/);
   assert.equal(board.turn, 'black');
+});
+
+// ------------------------------------------------------------------ 别把对话撑爆
+
+/** 一段合法的着法序列，够长到能暴露"返回随步数增长"的问题。 */
+const LONG_GAME = [
+  '炮二平五', '马8进7', '马二进三', '车9平8', '车一平二', '卒7进1', '车二进六', '马2进3',
+  '兵七进一', '炮8平9', '车二平三', '炮9退1', '马八进七', '车1进1', '炮八平九', '炮9平7',
+];
+
+test('走子的返回极短，而且不随步数变长', async () => {
+  // 用户抱怨「思考还是有点久」。真凶之一是每个工具返回都塞着整张棋盘和
+  // 全部历史，而且这些会永久留在对话里被反复重读。走子返回一句话就够。
+  const { text } = mount();
+  const sizes = [];
+  for (const move of LONG_GAME) {
+    sizes.push((await text('xiangqi_move', { move })).length);
+  }
+  assert.ok(sizes[0] <= 40, `第一步返回 ${sizes[0]} 字符，太长了`);
+  assert.ok(sizes[sizes.length - 1] <= 40, `第 ${sizes.length} 步返回 ${sizes[sizes.length - 1]} 字符`);
+  assert.ok(
+    Math.max(...sizes) - Math.min(...sizes) <= 6,
+    `返回长度不该随步数增长，实测 ${Math.min(...sizes)}~${Math.max(...sizes)}`,
+  );
+});
+
+test('xiangqi_board 的着法列表截尾，不随步数无限长', async () => {
+  const { text } = mount();
+  for (const move of LONG_GAME) await text('xiangqi_move', { move });
+
+  const report = await text('xiangqi_board', {});
+  assert.match(report, /共 16 手，这里是最新 12 手/, '完整历史是给人复盘用的，不该整份喂给模型');
+  assert.ok(report.length < 700, `报告 ${report.length} 字符，应当有界`);
+});
+
+test('走子的返回里带轮次或结果，模型不必再问一次', async () => {
+  const { text } = mount();
+  const first = await text('xiangqi_move', { move: '炮二平五' });
+  assert.match(first, /已走：炮二平五/);
+  assert.match(first, /轮到黑方走/);
+});
+
+// ------------------------------------------------------------------ 通知而不唤醒
+
+/** 一次 agent/request waterfall 的驱动，返回插件给出的配置。 */
+function driveRequest(listeners, sessionId, config) {
+  return listeners.get('agent/request')(
+    { agent: { session: { id: sessionId } }, signal: undefined },
+    () => Promise.resolve(config),
+  );
+}
+
+test('人走完一步之后的**那一次**模型调用被压到最轻的档位', async () => {
+  // 用户说「慢主要是思考太久了」。提示词劝不住，就动真格：在唤醒触发的那一次
+  // 调用上换掉 reasoningEffort，其余时候不碰。
+  const { call, listeners } = mount();
+  const base = { provider: 'p', model: 'm', temperature: 0.7 };
+
+  assert.deepEqual(await driveRequest(listeners, 'live-session', base), base, '还没人走棋时不该动配置');
+
+  await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
+
+  const altered = await driveRequest(listeners, 'live-session', base);
+  assert.equal(altered.reasoningEffort, 'low', '要挑名字里带 low 的档，而不是清单第一项');
+  assert.equal(altered.temperature, 0.7, '其他字段一个都不能丢');
+  assert.equal(altered.provider, 'p');
+
+  assert.deepEqual(
+    await driveRequest(listeners, 'live-session', base),
+    base,
+    '用完即弃：紧接着的第二次调用不该再被压',
+  );
+  assert.deepEqual(
+    await driveRequest(listeners, '别的会话', base),
+    base,
+    '别的会话一点都不该被影响',
+  );
+});
+
+test('档位清单只问一次，之后走缓存', async () => {
+  const { call, listeners, resolved } = mount();
+  const warm = async () => {
+    await call('move', { move: '炮二平五', sessionId: 's' });
+    await driveRequest(listeners, 's', { provider: 'p', model: 'm' });
+    await call('move', { move: '马8进7', sessionId: 's' });
+    await driveRequest(listeners, 's', { provider: 'p', model: 'm' });
+  };
+  await warm();
+  assert.equal(resolved.length, 1, `resolveModelInfo 应当只问一次，实际问了 ${resolved.length} 次`);
+});
+
+test('拿不到档位清单时原样放行，绝不把这次调用弄挂', async () => {
+  const { call, listeners, ctx } = mount();
+  ctx.get = (name) => (name === 'llm' ? { resolveModelInfo: () => Promise.reject(new Error('没有元数据')) } : undefined);
+
+  await call('move', { move: '炮二平五', sessionId: 's' });
+  const config = { provider: 'p', model: 'm' };
+  assert.deepEqual(await driveRequest(listeners, 's', config), config);
+});
+
+test('模型本来就不支持档位时，原样放行', async () => {
+  const { call, listeners, ctx } = mount();
+  ctx.get = (name) => (name === 'llm'
+    ? { resolveModelInfo: () => Promise.resolve({ provider: 'p', model: 'm', reasoning: { efforts: [] } }) }
+    : undefined);
+
+  await call('move', { move: '炮二平五', sessionId: 's' });
+  const config = { provider: 'p', model: 'm' };
+  assert.deepEqual(await driveRequest(listeners, 's', config), config);
+});
+
+
+test('人悔棋会通知会话，但用 inject 不唤醒（这件事不需要它行动）', async () => {
+  const { call, agent } = mount();
+  await call('move', { move: '炮二平五', sessionId: 's' });
+  agent.followups.length = 0; // 清掉走子那一次的唤醒
+
+  const result = await call('undo', { sessionId: 's' });
+  assert.equal(result.ok, true);
+  assert.equal(result.value.note.notified, true);
+  assert.equal(agent.injected.length, 1, '应当 inject 一条');
+  assert.equal(agent.followups.length, 0, '不该为「哦，知道了」白烧一个完整回合');
+
+  const text = agent.injected[0].content[0].text;
+  assert.match(text, /人悔棋了/);
+  assert.match(text, /炮二平五/, '要说清楚撤销的是哪一手');
+  assert.match(text, /不必回应/);
+  assert.match(text, /———— 当前局面 ————/, '得把变过之后的局面带上，否则它下次还是懵的');
+});
+
+test('人重开一局也会通知会话', async () => {
+  const { call, agent } = mount();
+  await call('move', { move: '炮二平五', sessionId: 's' });
+  agent.followups.length = 0;
+
+  const result = await call('reset', { sessionId: 's' });
+  assert.equal(result.value.note.notified, true);
+  assert.equal(agent.injected.length, 1);
+  assert.equal(agent.followups.length, 0);
+  assert.match(agent.injected[0].content[0].text, /重开了/);
+  assert.match(agent.injected[0].content[0].text, /之前那盘作废/);
+});
+
+test('通知不到会话时悔棋照样完成，只在回执里说明原因', async () => {
+  const { call, ctx } = mount();
+  ctx.get = (name) => (name === 'agents' ? { get: () => undefined } : undefined);
+
+  await call('move', { move: '炮二平五', sessionId: 's' });
+  const result = await call('undo', { sessionId: 's' });
+  assert.equal(result.ok, true, '通知失败不该让悔棋失败');
+  assert.deepEqual(result.value.history, []);
+  assert.equal(result.value.note.notified, false);
+  assert.match(result.value.note.reason, /没找到会话/);
 });
