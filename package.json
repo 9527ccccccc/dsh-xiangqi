@@ -3,7 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "中国象棋：棋规引擎 + DSH 插件（进行中）",
+  "description": "中国象棋：棋规引擎 + DSH 插件（右栏棋盘 + 会话可调用的工具）",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    }
+  },
   "scripts": {
     "test": "node --test",
     "test:fast": "node --test --test-name-pattern=\"perft 深度 (1|2|3)\""
