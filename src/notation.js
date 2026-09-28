@@ -91,9 +91,18 @@ function fileGroup(pos, from) {
 /**
  * 位置前缀。同列只有这一枚时返回 null——此时记谱必须写出起始纵线。
  *
- * 两枚用「前/后」，三枚用「前/中/后」，这两种写法是明确的。
- * 四枚及以上按从前往后的序号，这一条是项目约定，尚未与《中国象棋竞赛规则》
- * 原文核对（四枚同线极罕见），核查记录见 .scratch。
+ * 两枚用「前/后」，三枚用「前/中/后」，这两条有官方规则背书。
+ *
+ * 四枚及以上在官方规则里是空白：《象棋竞赛规则》2011/2020 版第 7 条、
+ * WXF《世界象棋规则》2018 版 7.5、亚洲象棋联合会 2017 规例都只写到三枚。
+ * 市面存在两套互相冲突的写法，这里采用事实标准（东萍 DhtmlXQ、皮卡鱼）：
+ * 最前与最后仍叫「前/后」，中间从前往后依次编号——
+ * 4 枚是「前、二、三、后」，5 枚是「前、二、三、四、后」。
+ * 另一套（象棋百科全书 xqbase）是「一、二、三、四」，采用面窄，未采用。
+ * 详见 docs/notation-conventions.md。
+ *
+ * 「前」的判定：靠近对方底线的一枚为前。本项目行号自黑方底线起算，
+ * 所以红方的「前」是行号小的那枚、黑方是行号大的那枚。
  */
 export function positionalPrefix(pos, from) {
   const group = fileGroup(pos, from);
@@ -101,6 +110,8 @@ export function positionalPrefix(pos, from) {
   const index = group.indexOf(from);
   if (group.length === 2) return index === 0 ? '前' : '后';
   if (group.length === 3) return ['前', '中', '后'][index];
+  if (index === 0) return '前';
+  if (index === group.length - 1) return '后';
   return numChar(pos.cells[from].color, index + 1);
 }
 

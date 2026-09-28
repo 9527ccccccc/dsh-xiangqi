@@ -114,6 +114,48 @@ test('同列只有一枚时不加前缀', () => {
   assert.equal(positionalPrefix(pos, idx(0, 9)), null);
 });
 
+test('同列四枚用「前/二/三/后」（东萍派事实标准；官规对四枚以上是空白）', () => {
+  const pos = build(RED, [
+    [4, 9, RED, 'K'], [3, 0, BLACK, 'K'],
+    [0, 1, RED, 'P'], [0, 3, RED, 'P'], [0, 5, RED, 'P'], [0, 7, RED, 'P'],
+  ]);
+  assert.equal(positionalPrefix(pos, idx(0, 1)), '前');
+  assert.equal(positionalPrefix(pos, idx(0, 3)), '二');
+  assert.equal(positionalPrefix(pos, idx(0, 5)), '三');
+  assert.equal(positionalPrefix(pos, idx(0, 7)), '后', '最后一枚仍叫「后」，不是「四」');
+});
+
+test('同列五枚用「前/二/三/四/后」', () => {
+  const pos = build(RED, [
+    [4, 9, RED, 'K'], [3, 0, BLACK, 'K'],
+    [0, 1, RED, 'P'], [0, 2, RED, 'P'], [0, 4, RED, 'P'], [0, 6, RED, 'P'], [0, 8, RED, 'P'],
+  ]);
+  assert.deepEqual(
+    [idx(0, 1), idx(0, 2), idx(0, 4), idx(0, 6), idx(0, 8)].map((i) => positionalPrefix(pos, i)),
+    ['前', '二', '三', '四', '后'],
+  );
+});
+
+test('四枚以上同线的记谱照样唯一且能往返', () => {
+  const pos = build(RED, [
+    [4, 9, RED, 'K'], [3, 0, BLACK, 'K'],
+    [0, 1, RED, 'P'], [0, 2, RED, 'P'], [0, 4, RED, 'P'], [0, 6, RED, 'P'], [0, 8, RED, 'P'],
+  ]);
+  const all = legalNotations(pos);
+  const seen = new Set();
+  for (const entry of all) {
+    assert.ok(!seen.has(entry.notation), `「${entry.notation}」重复`);
+    seen.add(entry.notation);
+    const back = parseMove(pos, entry.notation);
+    assert.equal(back.from, entry.from, `「${entry.notation}」起点对不上`);
+    assert.equal(back.to, entry.to, `「${entry.notation}」终点对不上`);
+  }
+  const prefixes = all.map((e) => e.notation.slice(0, 1));
+  for (const p of ['前', '二', '三', '四', '后']) {
+    assert.ok(prefixes.includes(p), `没有生成以「${p}」开头的记谱`);
+  }
+});
+
 // ---------------------------------------------------------------- 往返一致
 
 test('逐着往返：开局的每一步都能原样解析回来', () => {
