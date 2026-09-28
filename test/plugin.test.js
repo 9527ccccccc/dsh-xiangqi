@@ -201,9 +201,18 @@ test('面板组件渲染时把棋盘与 32 枚棋子真画出来', async () => {
   assert.deepEqual(transform[1].slice(0, 4), [2, 0, 0, 2], '要按 devicePixelRatio 缩放');
 });
 
-test('host 半边是合法模块且 apply 可调用', async () => {
+test('host 半边是合法模块且能被挂载', async () => {
   const mod = await import(pathToFileURL(path.join(here, '..', 'lib', 'index.js')).href);
   assert.equal(mod.name, 'dsh-xiangqi');
   assert.equal(typeof mod.apply, 'function');
-  assert.doesNotThrow(() => mod.apply({}));
+  assert.deepEqual(mod.inject, ['tools']);
+
+  // 用一个最小的假 ctx 挂一遍：真正驱动四个工具的测试在 host.test.js
+  const registered = [];
+  const ctx = {
+    effect(fn) { return fn(); },
+    tools: { register(definition) { registered.push(definition.name); return () => {}; } },
+  };
+  assert.doesNotThrow(() => mod.apply(ctx));
+  assert.equal(registered.length, 4);
 });
