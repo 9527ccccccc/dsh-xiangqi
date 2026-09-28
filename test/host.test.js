@@ -6,10 +6,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import { apply, name, inject } from '../lib/index.js';
 import { idx } from '../src/board.js';
-import { EventEmitter } from 'node:events';
 
 /**
  * 驱动宿主那条 HTTP 路由一次。
@@ -47,7 +50,10 @@ function hitRoute(route, endpoint, payload) {
 }
 
 /** 挂一份全新的插件实例：棋局状态挂在插件实例上，所以每个用例都要新挂一次。 */
-function mount() {
+function mount(stateDir) {
+  // 每个实例一个独立的状态目录，免得用例之间通过存盘文件互相串。
+  const dir = stateDir || mkdtempSync(path.join(tmpdir(), 'xq-test-'));
+  process.env.DSH_XIANGQI_STATE_DIR = dir;
   const tools = new Map();
   const routes = new Map();
   const effects = [];
@@ -82,12 +88,18 @@ function mount() {
     routes,
     agent,
     ctx,
+    stateDir: dir,
     /** 走浏览器半边的那条路：同一个 handler，同一个返回形状。 */
     call: (endpoint, payload) => hitRoute(routes.get('/xiangqi'), endpoint, payload).then((r) => r.json),
-    run: (toolName, args = {}) => tools.get(toolName).execute(args, {}),
-    text: async (toolName, args) => {
+    /** 走会话工具那条路。exec 里的 agent.session.id 决定动哪一盘棋。 */
+    run: (toolName, args = {}, sessionId) => tools.get(toolName).execute(
+      args,
+      sessionId ? { agent: { session: { id: sessionId } } } : {},
+    ),
+    text: async (toolName, args, sessionId) => {
       const tool = tools.get(toolName);
-      const value = await tool.execute(args, {});
+      const exec = sessionId ? { agent: { session: { id: sessionId } } } : {};
+      const value = await tool.execute(args, exec);
       return tool.output.render(args, value).map((block) => block.text).join('\n');
     },
   };
@@ -228,6 +240,87 @@ test('工具与浏览器半边共用同一盘棋', async () => {
   assert.match(board.report, /着法：1\.炮二平五 2\.马8进7/);
 });
 
+// ------------------------------------------------------------------ 按会话分开
+
+test('棋局跟着会话走：两个会话各有各的一盘棋', async () => {
+  const { call } = mount();
+  await call('move', { move: '炮二平五', sessionId: '会话甲' });
+
+  const a = await call('view', { sessionId: '会话甲' });
+  assert.equal(a.value.turn, 'black');
+  assert.deepEqual(a.value.history, ['炮二平五']);
+
+  const b = await call('view', { sessionId: '会话乙' });
+  assert.equal(b.value.turn, 'red', '换个对话应当是另一盘棋，还在开局');
+  assert.deepEqual(b.value.history, []);
+});
+
+test('会话工具动的是调用它的那个会话的棋局', async () => {
+  const { call, run } = mount();
+  await call('move', { move: '炮二平五', sessionId: '甲' });
+
+  const board甲 = await run('xiangqi_board', {}, '甲');
+  assert.match(board甲.report, /着法：1\.炮二平五/);
+
+  const board乙 = await run('xiangqi_board', {}, '乙');
+  assert.deepEqual(board乙.legal.length, 44, '乙会话应当还在开局');
+
+  // 乙会话走自己的
+  await run('xiangqi_move', { move: '马八进七' }, '乙');
+  const b2 = await call('view', { sessionId: '乙' });
+  assert.deepEqual(b2.value.history, ['马八进七']);
+  const a2 = await call('view', { sessionId: '甲' });
+  assert.deepEqual(a2.value.history, ['炮二平五'], '甲会话不该被乙会话影响');
+});
+
+test('悔棋也只退自己会话的那一盘', async () => {
+  const { call, run } = mount();
+  await call('move', { move: '炮二平五', sessionId: '甲' });
+  await call('move', { move: '马八进七', sessionId: '乙' });
+
+  await run('xiangqi_undo', {}, '甲');
+  const a = await call('view', { sessionId: '甲' });
+  assert.deepEqual(a.value.history, [], '甲悔干净了');
+  const b = await call('view', { sessionId: '乙' });
+  assert.deepEqual(b.value.history, ['马八进七'], '乙没被牵连');
+});
+
+test('没有会话 id 时落到公共兜底盘（子代理或直接调工具的情况）', async () => {
+  const { call, run } = mount();
+  await run('xiangqi_move', { move: '炮二平五' });       // 无 exec.agent
+  const fallback = await call('view', {});                 // 面板也没带 id
+  assert.deepEqual(fallback.value.history, ['炮二平五']);
+
+  // 而带了 id 的面板看的是它自己那盘
+  const withId = await call('view', { sessionId: '某个会话' });
+  assert.deepEqual(withId.value.history, []);
+});
+
+test('重启之后棋局还在：新挂载的实例从同一份存盘里读回来', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xq-persist-'));
+  try {
+    const before = mount(dir);
+    await before.call('move', { move: '炮二平五', sessionId: '甲' });
+    await before.call('move', { move: '马8进7', sessionId: '甲' });
+
+    // 模拟 dsh web 重启：全新实例、同一份状态目录
+    const after = mount(dir);
+    const restored = await after.call('view', { sessionId: '甲' });
+    assert.deepEqual(restored.value.history, ['炮二平五', '马8进7'], '重启不该把正在下的棋弄丢');
+    assert.equal(restored.value.turn, 'red');
+
+    // 别的会话不受影响
+    const other = await after.call('view', { sessionId: '乙' });
+    assert.deepEqual(other.value.history, []);
+
+    // 接着下也没问题
+    const board = await after.run('xiangqi_board', {}, '甲');
+    assert.match(board.report, /着法：1\.炮二平五 2\.马8进7/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ------------------------------------------------------------------ 唤醒会话
 
 test('人在面板上落子会唤醒会话接招', async () => {
@@ -270,17 +363,19 @@ test('会话 id 对不上时不唤醒，并说清楚原因', async () => {
   assert.equal(agent.followups.length, 0);
 });
 
-test('轮到人走的时候，会话经 RPC 走子也不会把自己叫醒', async () => {
+test('轮到人走的时候，会话经 HTTP 走子也不会把自己叫醒', async () => {
   const { call, agent } = mount();
   // 开局是红（人）走。红走完轮到黑（会话），这一步按说是人走的，但我们直接指定
   // sessionId 模拟异常路径：黑走完之后轮到红，就不该唤醒。
-  await call('move', { from: idx(7, 7), to: idx(4, 7) });
+  await call('move', { from: idx(7, 7), to: idx(4, 7), sessionId: 'live-session' });
+  assert.equal(agent.followups.length, 1, '人走完轮到会话，这一下该唤醒');
+
   const second = await call('move', { from: idx(1, 0), to: idx(2, 2), sessionId: 'live-session' });
   assert.equal(second.ok, true);
   assert.equal(second.value.turn, 'red');
   assert.equal(second.value.wake.woken, false);
   assert.match(second.value.wake.reason, /还没轮到会话走/);
-  assert.equal(agent.followups.length, 0);
+  assert.equal(agent.followups.length, 1, '轮到人走的时候不该再唤醒');
 });
 
 test('整条对局循环：人走 → 唤醒 → 会话接招 → 再轮到人', async () => {
@@ -290,7 +385,7 @@ test('整条对局循环：人走 → 唤醒 → 会话接招 → 再轮到人',
   assert.equal(agent.followups.length, 1);
 
   // 会话被唤醒后照做
-  const reply = await run('xiangqi_move', { move: '马8进7' });
+  const reply = await run('xiangqi_move', { move: '马8进7' }, 'live-session');
   assert.equal(reply.ok, true);
   assert.equal(reply.turn, 'red');
 
@@ -298,7 +393,7 @@ test('整条对局循环：人走 → 唤醒 → 会话接招 → 再轮到人',
   await call('move', { from: idx(7, 9), to: idx(6, 7), sessionId: 'live-session' });
   assert.equal(agent.followups.length, 2);
 
-  const board = await run('xiangqi_board');
+  const board = await run('xiangqi_board', {}, 'live-session');
   assert.match(board.report, /着法：1\.炮二平五 2\.马8进7 3\.马二进三/);
 });
 

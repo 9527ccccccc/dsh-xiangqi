@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { RED, BLACK, idx, emptyPosition, startPosition, toFen } from '../src/board.js';
 import {
   newGame, applyMove, applyNotation, undoRound, setHint, setMode, placePiece, removePiece,
-  outcome, resultText, movesFrom, gameReport, HALFMOVE_LIMIT, HUMAN,
+  outcome, resultText, movesFrom, gameReport, serializeGame, deserializeGame,
+  HALFMOVE_LIMIT, HUMAN,
 } from '../lib/game.js';
 
 function build(turn, list) {
@@ -222,4 +223,27 @@ test('摆棋模式：放子、拿子、切模式', () => {
 test('摆棋模式下不能走子', () => {
   const setup = setMode(newGame(), 'setup');
   assert.throws(() => applyNotation(setup, '炮二平五'), /摆棋模式/);
+});
+
+test('存盘往返：序列化再反序列化得到同一盘棋，且还能接着下', () => {
+  let game = newGame();
+  game = applyNotation(game, '炮二平五').game;
+  game = applyNotation(game, '马8进7').game;
+  game = setHint(game, '车九进一').game;
+
+  const revived = deserializeGame(JSON.parse(JSON.stringify(serializeGame(game))));
+  assert.equal(toFen(revived.position), toFen(game.position));
+  assert.deepEqual(revived.history, game.history);
+  assert.deepEqual(revived.keys, game.keys);
+  assert.equal(revived.halfmoveClock, game.halfmoveClock);
+  assert.equal(revived.hint.notation, '车九进一');
+  assert.equal(revived.mode, game.mode);
+
+  const next = applyNotation(revived, '车九进一');
+  assert.equal(next.move.notation, '车九进一');
+});
+
+test('存盘数据坏了要抛错，而不是悄悄给个空局', () => {
+  assert.throws(() => deserializeGame(null), /缺 FEN/);
+  assert.throws(() => deserializeGame({}), /缺 FEN/);
 });
