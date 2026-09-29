@@ -1,14 +1,40 @@
 {
   "name": "dsh-xiangqi",
   "version": "0.1.0",
-  "private": true,
-  "type": "module",
   "description": "中国象棋：棋规引擎 + DSH 插件（右栏棋盘 + 会话可调用的工具）",
+  "license": "MIT",
+  "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "src/",
+    "docs/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "xiangqi",
+    "chinese-chess",
+    "chess",
+    "象棋"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/9527ccccccc/dsh-xiangqi.git"
+  },
+  "homepage": "https://github.com/9527ccccccc/dsh-xiangqi#readme",
+  "bugs": {
+    "url": "https://github.com/9527ccccccc/dsh-xiangqi/issues"
   },
   "dsh": {
     "client": {
@@ -16,7 +42,7 @@
     }
   },
   "scripts": {
-    "test": "node --test",
-    "test:fast": "node --test --test-name-pattern=\"perft 深度 (1|2|3)\""
+    "test": "node --import ./test-support/dsh-stub.mjs --test",
+    "test:fast": "node --import ./test-support/dsh-stub.mjs --test --test-name-pattern=\"perft 深度 (1|2|3)\""
   }
 }

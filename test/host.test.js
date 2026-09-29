@@ -12,8 +12,19 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { apply, name, inject } from '../lib/index.js';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 import { RED, idx, emptyPosition } from '../src/board.js';
 import { newGame, serializeGame } from '../lib/game.js';
+
+/**
+ * 有两条用例断言的是**宿主**的行为，不是本插件的行为：defineTool 会把参数简写编译成
+ * JSON Schema，并在 execute 之前按 schema 校验入参。没有真实 DSH 安装时（CI、刚 clone
+ * 的机器）跑不到这两条——用 test-support 里的替身糊一个假编译器只会得到「看起来绿、
+ * 其实没测到东西」的结果，所以明着跳过。
+ */
+const NEEDS_REAL_DSH = defineTool.STUBBED
+  ? '需要真实的 @deepseek-ai/dsh-tools：断言的是宿主的 schema 编译与入参校验'
+  : false;
 
 /**
  * 驱动宿主那条 HTTP 路由一次。
@@ -520,7 +531,7 @@ test('整条对局循环：人走 → 唤醒 → 会话接招 → 再轮到人',
   assert.match(board.report, /着法：1\.炮二平五 2\.马8进7 3\.马二进三/);
 });
 
-test('工具的参数与输出 schema 编译成了 JSON Schema', () => {
+test('工具的参数与输出 schema 编译成了 JSON Schema', { skip: NEEDS_REAL_DSH }, () => {
   const { tools } = mount();
   const move = tools.get('xiangqi_move');
   assert.equal(move.parameters.type, 'object');
@@ -531,7 +542,7 @@ test('工具的参数与输出 schema 编译成了 JSON Schema', () => {
   assert.deepEqual(move.output.schema.properties.turn.enum, ['red', 'black']);
 });
 
-test('传入非法参数类型时，在进 execute 之前就被 schema 拦下', async () => {
+test('传入非法参数类型时，在进 execute 之前就被 schema 拦下', { skip: NEEDS_REAL_DSH }, async () => {
   const { run } = mount();
   await assert.rejects(() => run('xiangqi_move', { move: 123 }), /move|string/);
   await assert.rejects(() => run('xiangqi_move', {}), /move/);
