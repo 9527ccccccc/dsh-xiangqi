@@ -7,14 +7,14 @@
 // 而「对局模式」其实长在 DSH 右栏里，两者不是一回事）。
 //
 // 两张图都是**真跑代码**出来的，不是手画的：
-//   docs/board-panel.jpg       把 lib/client.js 的 drawScene 喂给真 canvas 渲出来
+//   docs/board-panel.jpg       在浏览器里真跑 lib/client.js 注册的面板组件（见 preview-harness.html）
 //   docs/board-standalone.jpg  直接打开 chinese-chess-board.html 截的
 //
 // Playwright 不在 package.json 的依赖里（仓库零运行时依赖），只在出图时需要：
-//   - 先试 `import('playwright')`
+//   - 先试 `require('playwright')`
 //   - 不行就用环境变量 PLAYWRIGHT_PATH 指一个（可以是 playwright 包的目录）
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -58,61 +58,63 @@ function loadPlaywright() {
 }
 
 /**
- * 出「对局模式」那张：真拿 client.js 的 drawScene 画。
+ * 出「对局模式」那张：真跑面板组件。
  *
- * 走两步棋再落一张图，是因为这样才能同时看到走过的落点圈和支招箭头——
- * 那两样正是面板相对独立摆棋页多出来的东西。
+ * 早期版本是自己拼一块棋盘贴到深色底上——那既不是面板的样子，也没人看得出
+ * 它跟真实界面差多少。现在改成 scripts/preview-harness.html 在浏览器里跑
+ * lib/client.js 注册进去的那个组件本身，排版、文案、画法全部来自代码。
+ *
+ * 走两步棋再落图，是为了让落点圈和支招箭头也出现在画面里——那两样正是面板
+ * 相对独立摆棋页多出来的东西。
  */
 async function renderPanel(chromium) {
   // 炮二平五、马8进7，然后给红方支一招马二进三
-  const { fen, last } = playNotation([[idx(7, 7), idx(4, 7)], [idx(1, 0), idx(2, 2)]]);
-  const hint = { from: idx(7, 9), to: idx(6, 7) };
+  const played = playNotation([[idx(7, 7), idx(4, 7)], [idx(1, 0), idx(2, 2)]]);
+  const view = {
+    mode: 'game',
+    fen: played.fen,
+    turn: 'black',
+    inCheck: false,
+    legalCount: 42,
+    history: ['炮二平五', '马8进7'],
+    lastMove: played.last,
+    hint: { from: idx(7, 9), to: idx(6, 7), notation: '马二进三' },
+    result: null,
+    resultText: '',
+  };
 
   const dir = mkdtempSync(path.join(tmpdir(), 'xq-preview-'));
-  const clientJs = pathToFileURL(path.join(ROOT, 'lib', 'client.js')).href;
   const harness = path.join(dir, 'harness.html');
 
   try {
-    writeFileSync(harness, `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<style>html,body{margin:0;background:#1b1a19}#wrap{padding:14px;display:inline-block}
-canvas{display:block;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,.38)}</style></head>
-<body><div id="wrap"><canvas id="c"></canvas></div>
-<script>window.__ModuleLoader__={load(d){window.__def=d}}<\/script>
-<script src="${clientJs}"><\/script>
-<script>
-  // 冒充宿主那份冻结的模块表。只在模块顶层被取一次，而 drawScene 根本不碰它们。
-  const fakeRequire = (id) => {
-    if (id === 'react') return { useState: (v) => [v, () => {}], useEffect: () => {}, useRef: (v) => ({ current: v }) };
-    if (id === 'react/jsx-runtime') return { jsx: () => null, jsxs: () => null };
-    throw new Error('预览脚本没准备这个模块：' + id);
-  };
-  const mod = window.__def.factory(fakeRequire);
-  const cell = 52, m = cell * 0.62;
-  const canvas = document.getElementById('c');
-  const w = 8 * cell + m * 2, h = 9 * cell + m * 2;
-  const dpr = 2;
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  canvas.style.width = w + 'px'; canvas.style.height = h + 'px';
-  const g = canvas.getContext('2d');
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  mod.__test__.drawScene(g, cell, ${JSON.stringify(fen)},
-    { lastMove: ${JSON.stringify(last)}, hint: ${JSON.stringify(hint)}, history: [], result: null }, null);
-  window.__ready = true;
-<\/script></body></html>`);
+    const template = readFileSync(path.join(ROOT, 'scripts', 'preview-harness.html'), 'utf8');
+    const config = {
+      view,
+    };
+    // 冒充宿主的模块加载器，再按顺序加载 client.js——file:// 下 classic script
+    // 是唯一能加载外部脚本的通道（fetch / XHR / module 都被 origin null 的 CORS 拦死）。
+    const loader = [
+      '<script>window.__ModuleLoader__ = { load(def) { window.__def = def; } };<\/script>',
+      `<script src="${pathToFileURL(path.join(ROOT, 'lib', 'client.js')).href}"><\/script>`,
+      `<script>window.__PREVIEW__ = ${JSON.stringify(config)};<\/script>`,
+    ].join('\n');
+    writeFileSync(harness, template.replace('<!--CLIENT_LOADER-->', loader));
 
     const browser = await chromium.launch();
     try {
-      const page = await browser.newPage({ viewport: { width: 900, height: 900 }, deviceScaleFactor: 2 });
+      const page = await browser.newPage({ viewport: { width: 600, height: 900 }, deviceScaleFactor: 2 });
       /** 页面里抛的错不能咽掉：一张「画了一半」的图混进 README 比没有图更糟。 */
       const errors = [];
       page.on('pageerror', (error) => errors.push(error.message));
       await page.goto(pathToFileURL(harness).href);
-      await page.waitForFunction(() => window.__ready === true);
+      await page.waitForFunction(() => window.__PREVIEW_READY__ === true, null, { timeout: 20000 });
+      const failure = await page.evaluate(() => window.__PREVIEW_ERROR__);
+      if (failure) throw new Error(`预览页里报错了：${failure}`);
       if (errors.length) throw new Error(`预览页里报错了：\n${errors.join('\n')}`);
-      await page.locator('#wrap').screenshot({
+      await page.locator('#stage').screenshot({
         path: path.join(ROOT, 'docs', 'board-panel.jpg'),
         type: 'jpeg',
-        quality: 90,
+        quality: 92,
       });
     } finally {
       await browser.close();

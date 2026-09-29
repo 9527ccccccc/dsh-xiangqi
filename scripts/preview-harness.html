@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>面板预览</title>
+<style>
+  html, body { margin: 0; }
+  /* 配色照着 DSH Web GUI 的浅色主题给。面板自己用的是 color:inherit，
+     按钮也继承颜色——"主题"是这一层决定的，面板不假设。
+     高度留 auto：面板的根节点是 height:100%，这样它会自己收缩到内容高度。 */
+  #stage {
+    width: 360px;
+    background: #ffffff;
+    color: #1f1f1f;
+    border: 1px solid #e6e6e6;
+  }
+</style>
+</head>
+<body>
+<!--CLIENT_LOADER-->
+<div id="stage"></div>
+
+<script>
+// 这份 harness 在浏览器里**真跑面板组件**，不是照着它重画一遍：
+//   - React 用一个极小的替代品（够跑这个组件的三个 hook）
+//   - jsx 造 {type, props} 节点树，再序列化成真 DOM
+//   - ref 指向真元素，于是组件自己的绘制 effect 会往真 canvas 上画
+// 所以排版、文案、画法全部来自 lib/client.js，那边一改这边自动跟着变。
+//
+// 配置由 scripts/render-preview.mjs 注入成 window.__PREVIEW__。
+
+/** 刚好够用的 React：真 state、真重渲染、effect 带依赖比较。 */
+function createRuntime() {
+  const hooks = [];
+  const queued = [];
+  let cursor = 0;
+  let scheduled = false;
+  let tree = null;
+  let Component = null;
+  let props = null;
+
+  function schedule() {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => { scheduled = false; render(); });
+  }
+
+  function flush() {
+    while (queued.length) queued.shift()();
+  }
+
+  function render() {
+    cursor = 0;
+    tree = Component(props);
+    flush();
+  }
+
+  const React = {
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in hooks)) hooks[i] = { value: typeof initial === 'function' ? initial() : initial };
+      const slot = hooks[i];
+      slot.effect = slot.effect || null;
+      const set = (value) => {
+        const next = typeof value === 'function' ? value(slot.value) : value;
+        if (Object.is(next, slot.value)) return;
+        slot.value = next;
+        schedule();
+      };
+      return [slot.value, set];
+    },
+    useRef(initial) {
+      const i = cursor++;
+      if (!(i in hooks)) hooks[i] = { value: { current: initial === undefined ? null : initial } };
+      return hooks[i].value;
+    },
+    useEffect(fn, deps) {
+      const i = cursor++;
+      const prev = hooks[i];
+      const changed = !prev || !prev.deps || !deps || prev.deps === null ||
+        deps.length !== prev.deps.length || deps.some((d, k) => !Object.is(d, prev.deps[k]));
+      const slot = prev || { value: undefined };
+      slot.deps = deps ? deps.slice() : null;
+      slot.effect = fn;
+      hooks[i] = slot;
+      if (changed) {
+        queued.push(() => {
+          if (typeof slot.cleanup === 'function') slot.cleanup();
+          const cleanup = fn();
+          slot.cleanup = typeof cleanup === 'function' ? cleanup : undefined;
+        });
+      }
+    },
+  };
+
+  return {
+    React,
+    mount(component, componentProps) {
+      Component = component;
+      props = componentProps;
+      render();
+    },
+    getTree: () => tree,
+    /**
+     * 把每个 effect 再跑一遍。
+     *
+     * 为什么需要：effect 是在「提交」时跑的，而这里没有真的调和器——DOM 是渲染完之后
+     * 一次性序列化出来的。所以第一轮 effect 面对的是空 ref。等 DOM 挂好、ref 指到真元素
+     * 之后再 flush 一次，组件自己的绘制 effect 才会往真 canvas 上画。
+     */
+    reflush() {
+      for (const slot of hooks) {
+        if (slot && typeof slot.effect === 'function') {
+          if (typeof slot.cleanup === 'function') slot.cleanup();
+          const cleanup = slot.effect();
+          slot.cleanup = typeof cleanup === 'function' ? cleanup : undefined;
+        }
+      }
+    },
+  };
+}
+
+/** {type, props} 节点树 → 真 DOM。 */
+function toDom(node) {
+  if (node === null || node === undefined || node === false || node === true) return null;
+  if (typeof node === 'string' || typeof node === 'number') return document.createTextNode(String(node));
+  if (Array.isArray(node)) {
+    const frag = document.createDocumentFragment();
+    for (const child of node) {
+      const dom = toDom(child);
+      if (dom) frag.appendChild(dom);
+    }
+    return frag;
+  }
+  const el = document.createElement(node.type);
+  const props = node.props || {};
+  if (props.style) Object.assign(el.style, props.style);
+  if (props.title) el.title = props.title;
+  if (props.ref && typeof props.ref === 'object') props.ref.current = el;
+  const dom = toDom(props.children);
+  if (dom) el.appendChild(dom);
+  return el;
+}
+
+function fakeCtx(log) {
+  return {
+    effect(fn, label) { log.effects.push(label); return fn(); },
+    get() { return undefined; },
+    sidebarRightTabs: { register(definition) { log.tabs.push(definition); return () => {}; } },
+    slots: {
+      inject(name, fn) { log.injected.push(name); return fn(); },
+      register(options, Component) { log.registered.push({ options, Component }); return () => {}; },
+    },
+    sidebarRight: { openTab() { log.opened.push('xiangqi'); return 'tab-1'; } },
+  };
+}
+
+const idle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+window.__PREVIEW_READY__ = false;
+window.__PREVIEW_ERROR__ = null;
+
+(async () => {
+  const config = window.__PREVIEW__;
+  try {
+    // 轮询会让画面在截图时抖；只留挂载时那一次拉取。
+    window.setInterval = () => 0;
+    window.clearInterval = () => {};
+    window.ResizeObserver = class { observe() {} disconnect() {} };
+    window.fetch = () => Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true, value: config.view }),
+    });
+
+    const log = { tabs: [], injected: [], registered: [], opened: [], effects: [] };
+    const runtime = createRuntime();
+    const mod = window.__def.factory((id) => {
+      if (id === 'react') return runtime.React;
+      if (id === 'react/jsx-runtime') return { jsx: (type, props) => ({ type, props: props || {} }) };
+      throw new Error('预览没准备这个模块：' + id);
+    });
+
+    mod.apply(fakeCtx(log));
+    const Panel = log.registered[0].Component;
+    if (!Panel) throw new Error('apply 没有注册面板组件');
+
+    // 先在"没有 DOM"的状态下把 state 跑收敛（这一步的绘制会自己跳过，因为 ref 还是空的）
+    runtime.mount(Panel, { sessionId: 'preview' });
+    for (let i = 0; i < 12; i++) await idle();
+
+    // 再挂 DOM，然后让 effect 针对真元素重跑一次——棋盘就是这时候画上去的
+    const stage = document.getElementById('stage');
+    stage.replaceChildren(toDom(runtime.getTree()));
+    runtime.reflush();
+    await idle();
+
+    const canvas = stage.querySelector('canvas');
+    if (!canvas) throw new Error('面板里没有 canvas');
+    if (!canvas.width || !canvas.height) throw new Error('canvas 尺寸是 0，绘制没跑起来');
+
+    window.__PREVIEW_READY__ = true;
+  } catch (error) {
+    window.__PREVIEW_ERROR__ = error && error.message ? error.message : String(error);
+    window.__PREVIEW_READY__ = true;
+  }
+})();
+</script>
+</body>
+</html>

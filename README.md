@@ -3,11 +3,11 @@
 把一盘中国象棋放进 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) 的右栏：
 **你在棋盘上点，会话用工具接招。** 不用切窗口，也不用把局面念给它听。
 
-![对局模式的棋盘](docs/board-panel.jpg)
+![对局模式的面板](docs/board-panel.jpg)
 
-> 这就是右栏里那块棋盘本身——由 `lib/client.js` 的 `drawScene` 直接渲染，
-> 不是画的示意图。图上能看到刚走过的两个落点圈（金圈）和一条支招箭头（绿）。
-> 另外还有一块独立的摆棋页，见下。
+> 这是**右栏面板本身**：状态行、悔棋/重开、棋盘、支招、着法历史，全由
+> `lib/client.js` 里那个组件渲染出来的，不是照着它画的示意图。图上能看到刚走过的
+> 落点圈（金圈）和一条支招箭头（绿）。另外还有一块独立的摆棋页，见下。
 
 ## 它是什么
 
@@ -104,9 +104,10 @@ scripts/render-preview.mjs 重新生成 README 里那两张棋盘预览图
 - 宿主 API 是对着 DSH `0.1.5-rc.2` 写的，DSH 迭代快，版本一变可能失效。报问题时请附 `dsh --version`。
 - 面板到 host 的通路是自己挂的 `/xiangqi` 前缀路由，不是 `ctx.connection.rpc.handle()`——原因见 install.md。
 - README 那两张图是 `scripts/render-preview.mjs` 跑出来的（需要本机有 Playwright，不是仓库依赖）。
-  第一张图直接喂给真 canvas 的，就是 `lib/client.js` 里那个 `drawScene`——改了画法记得重跑，
-  不然图会和代码对不上。这事真发生过一次：README 一度放的是独立摆棋页的截图，
-  而「对局模式」其实长在 DSH 右栏里，两者不是一回事。
+  第一张不是截图也不是示意图：`scripts/preview-harness.html` 在浏览器里**真跑**
+  `lib/client.js` 注册的那个面板组件，所以图上的排版、文案、画法都来自代码——改了那边记得重跑。
+  这事值得较真：README 一度放的是独立摆棋页的截图，而「对局模式」长在 DSH 右栏里，两者不是一回事；
+  后来一版又是自己拼了块棋盘贴到深色底上，同样对不上真实界面。
 
 ## 协议
 
