@@ -1,5 +1,17 @@
-# 派生目录：由 CLI 从对局真相重新生成，随时可丢
+# 棋局与启动信标：运行时产物，删了顶多丢一局棋
 state/
 
-# 依赖由 profile 链接进来（见 docs/install.md），不入版本库
+# 依赖由 profile 目录联接进来，见 docs/install.md
 node_modules/
+
+# 编辑器 / 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+.idea/
+.vscode/
+
+# 本地日志
+*.log
+npm-debug.log*
