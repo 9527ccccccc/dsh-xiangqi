@@ -1,5 +1,7 @@
 # dsh-xiangqi
 
+[![CI](https://github.com/9527ccccccc/dsh-xiangqi/actions/workflows/ci.yml/badge.svg)](https://github.com/9527ccccccc/dsh-xiangqi/actions/workflows/ci.yml)
+
 把一盘中国象棋放进 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) 的右栏：
 **你在棋盘上点，会话用工具接招。** 不用切窗口，也不用把局面念给它听。
 
