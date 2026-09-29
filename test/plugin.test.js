@@ -33,8 +33,11 @@ const view = (over = {}) => ({
 /** 记录所有调用与赋值的假 2D context。 */
 function fakeCanvasCtx() {
   const calls = [];
+  /** 属性赋值也要记：画法的「观感参数」（globalAlpha、lineWidth 之类）就在这里面。 */
+  const sets = [];
   const base = {
     calls,
+    sets,
     createLinearGradient: () => ({ addColorStop() {} }),
     createRadialGradient: () => ({ addColorStop() {} }),
   };
@@ -43,7 +46,7 @@ function fakeCanvasCtx() {
       if (prop in target) return target[prop];
       return (...args) => { calls.push([prop, args]); };
     },
-    set(target, prop, value) { target[prop] = value; return true; },
+    set(target, prop, value) { target[prop] = value; sets.push([prop, value]); return true; },
   });
 }
 
@@ -212,6 +215,21 @@ test('drawScene 把棋盘、32 枚棋子、楚河汉界都画出来', async () =
   assert.equal(pieces.filter((t) => t === '车').length, 4);
   assert.equal(pieces.filter((t) => t === '兵').length, 5);
   assert.equal(pieces.filter((t) => t === '卒').length, 5);
+});
+
+test('棋盘底色上叠了一道淡淡的木纹', async () => {
+  const { exports } = await loadPlugin();
+  const g = fakeCanvasCtx();
+  exports.__test__.drawScene(g, 38, START_FEN, view(), null);
+
+  // 木纹是「半透明 + 一道道描线」叠上去的。这条用例护住的是观感：
+  // 少了它，同样是那块木色，棋盘看上去就是一块塑料板——这是用户指出过的差异。
+  const translucent = g.sets.some(
+    ([key, value]) => key === 'globalAlpha' && typeof value === 'number' && value > 0 && value <= 0.1,
+  );
+  assert.ok(translucent, '应当有一道低透明度的木纹叠色');
+  const strokes = g.calls.filter(([name]) => name === 'stroke').length;
+  assert.ok(strokes > 80, `木纹是一道道描出来的线，stroke 次数应当明显多于棋盘线本身，实际 ${strokes}`);
 });
 
 test('drawScene 会画出走过的落点圈', async () => {
