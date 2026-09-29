@@ -4,7 +4,9 @@
 
 下面的实测结论依然有效，值得留着：默认浏览器里 `file://` 页面的读取通道到底有哪些是活的。
 
-网页棋盘必须能被仓库外的 `xq` CLI 实时驱动（会话走一步，页面不刷新就看到）。默认浏览器把 `file://` 页面关在 origin `null` 里：`fetch`、`XMLHttpRequest`、`<script type="module">`、`<iframe>` 读 DOM 全部被 CORS 拦死，加 `--allow-file-access-from-files` 也救不了 `fetch`。唯一在默认设置下能用的通道是**动态插入 classic `<script src="./state/board-state.js">`**：每次重新读盘、无缓存陈旧问题，且用户双击打开就成立。`_probe/` 保留了实测脚本与原始输出。
+网页棋盘必须能被仓库外的 `xq` CLI 实时驱动（会话走一步，页面不刷新就看到）。默认浏览器把 `file://` 页面关在 origin `null` 里：`fetch`、`XMLHttpRequest`、`<script type="module">`、`<iframe>` 读 DOM 全部被 CORS 拦死，加 `--allow-file-access-from-files` 也救不了 `fetch`。唯一在默认设置下能用的通道是**动态插入 classic `<script src="./state/board-state.js">`**：每次重新读盘、无缓存陈旧问题，且用户双击打开就成立。
+
+逐条实测记录见 [docs/research/file-protocol-live-control.md](../research/file-protocol-live-control.md)（当时的实验脚本与原始输出没有随仓库保留，那份是结论重写）。
 
 ## Considered Options
 
