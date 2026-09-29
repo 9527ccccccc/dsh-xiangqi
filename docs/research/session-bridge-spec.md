@@ -1,5 +1,9 @@
 # 会话能双向通讯的象棋棋盘与 CLI
 
+> **Status: superseded by [ADR-0004](../adr/0004-chess-as-dsh-plugin.md).** 这份规格要求自建一个
+> 本地常驻服务 + 独立网页。用户随后明确「不要我多开一个网站」，于是改成做 DSH 插件。
+> 保留在这里是因为其中的双向通道设计、`xq` 命令面与失败模式分析仍然有参考价值。
+
 `ready-for-agent`
 
 ## Problem Statement

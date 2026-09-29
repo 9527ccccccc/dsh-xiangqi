@@ -1,5 +1,11 @@
 # DSH 插件 API 侦察报告（象棋插件可行性）
 
+> **这是一份侦察笔记，不是当前设计。** 写于 DSH `0.1.5-rc.2`，对着当时本机安装的包只读翻出来的，
+> 每条结论都带版本与路径前提。DSH 迭代很快，请把它当线索而不是当契约——真要用某个 API，
+> 以你自己那份安装为准。
+>
+> 本仓库当前采用的架构见 [`../adr/0004-chess-as-dsh-plugin.md`](../adr/0004-chess-as-dsh-plugin.md)。
+
 - **侦察对象**：本机已安装的 DSH 0.1.5-rc.2 插件包
 - **一手材料根目录**：`%USERPROFILE%\.dsh\profiles\node_modules\@deepseek-ai\`
   （该目录下的包都是 **junction**，真实目标是 `%USERPROFILE%\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai\`，所以顶层与嵌套两份副本内容相同）
@@ -623,7 +629,7 @@ for (const packageName of dependencies) {
     - id: hello-right-panel
       name: '@local/dsh-hello-right-panel'
 ```
-本地包在 `%USERPROFILE%\.dsh\profiles\web\node_modules\@local\`（**真实目录**，不是 junction），由 `D:\dsh\plan\packages\build-plan-mode` 的 `npm run deploy:user-profile` 脚本拷进来。**这说明本机已经有「不上 npm、直接手挂本地包」的成熟做法。**
+本地包在 `%USERPROFILE%\.dsh\profiles\web\node_modules\@local\`（**真实目录**，不是 junction），由另一个本地仓库的 `npm run deploy:user-profile` 脚本拷进来。**这说明本机已经有「不上 npm、直接手挂本地包」的成熟做法。**
 
 ### 6.3 `cordis.patch.yml` 的正确写法（不破坏现有配置）
 
