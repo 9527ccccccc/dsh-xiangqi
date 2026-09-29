@@ -4,7 +4,7 @@
 // 那条路径（defineTool 编译出的 schema 会先校验入参，再进 execute）。
 // 所以这一层测到的不是「我的函数对不对」，而是「工具契约对不对」。
 
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -61,10 +61,36 @@ function hitRoute(route, endpoint, payload) {
   });
 }
 
+/**
+ * mount() 自己开出来的状态目录，跑完统一删。
+ *
+ * 之前没删，结果每跑一次 `npm test` 就在系统临时目录里留一百多个空壳——这个仓库
+ * 真的攒到过 1239 个。显式传 dir 的用例仍由它们自己删（见各用例的 try/finally），
+ * 这里只管自动开出来的那些。
+ */
+const autoDirs = new Set();
+
+after(() => {
+  for (const dir of autoDirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // 删不掉不该让测试变红
+    }
+  }
+  autoDirs.clear();
+});
+
+function makeStateDir(prefix) {
+  const dir = mkdtempSync(path.join(tmpdir(), prefix));
+  autoDirs.add(dir);
+  return dir;
+}
+
 /** 挂一份全新的插件实例：棋局状态挂在插件实例上，所以每个用例都要新挂一次。 */
 function mount(stateDir) {
   // 每个实例一个独立的状态目录，免得用例之间通过存盘文件互相串。
-  const dir = stateDir || mkdtempSync(path.join(tmpdir(), 'xq-test-'));
+  const dir = stateDir || makeStateDir('xq-test-');
   process.env.DSH_XIANGQI_STATE_DIR = dir;
   const tools = new Map();
   const routes = new Map();
