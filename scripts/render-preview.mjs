@@ -72,7 +72,8 @@ async function renderPanel(chromium) {
   const clientJs = pathToFileURL(path.join(ROOT, 'lib', 'client.js')).href;
   const harness = path.join(dir, 'harness.html');
 
-  writeFileSync(harness, `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+  try {
+    writeFileSync(harness, `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
 <style>html,body{margin:0;background:#1b1a19}#wrap{padding:14px;display:inline-block}
 canvas{display:block;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,.38)}</style></head>
 <body><div id="wrap"><canvas id="c"></canvas></div>
@@ -99,22 +100,26 @@ canvas{display:block;border-radius:8px;box-shadow:0 8px 22px rgba(0,0,0,.38)}</s
   window.__ready = true;
 <\/script></body></html>`);
 
-  const browser = await chromium.launch();
-  try {
-    const page = await browser.newPage({ viewport: { width: 900, height: 900 }, deviceScaleFactor: 2 });
-    /** 页面里抛的错不能咽掉：一张「画了一半」的图混进 README 比没有图更糟。 */
-    const errors = [];
-    page.on('pageerror', (error) => errors.push(error.message));
-    await page.goto(pathToFileURL(harness).href);
-    await page.waitForFunction(() => window.__ready === true);
-    if (errors.length) throw new Error(`预览页里报错了：\n${errors.join('\n')}`);
-    await page.locator('#wrap').screenshot({
-      path: path.join(ROOT, 'docs', 'board-panel.jpg'),
-      type: 'jpeg',
-      quality: 90,
-    });
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage({ viewport: { width: 900, height: 900 }, deviceScaleFactor: 2 });
+      /** 页面里抛的错不能咽掉：一张「画了一半」的图混进 README 比没有图更糟。 */
+      const errors = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      await page.goto(pathToFileURL(harness).href);
+      await page.waitForFunction(() => window.__ready === true);
+      if (errors.length) throw new Error(`预览页里报错了：\n${errors.join('\n')}`);
+      await page.locator('#wrap').screenshot({
+        path: path.join(ROOT, 'docs', 'board-panel.jpg'),
+        type: 'jpeg',
+        quality: 90,
+      });
+    } finally {
+      await browser.close();
+    }
   } finally {
-    await browser.close();
+    // 临时目录的清理要在最外层：chromium.launch() 自己失败时也得删掉，
+    // 否则每崩一次就在系统临时目录里留一个壳（这仓库刚因为同一类疏忽清过 1239 个）。
     rmSync(dir, { recursive: true, force: true });
   }
   console.log('docs/board-panel.jpg');
